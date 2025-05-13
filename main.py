@@ -115,14 +115,19 @@ if page == "📋 Lista de Devedores":
 
                     step_val = 10.0 if max_val <= 100 else (100.0 if max_val <= 10000 else 1000.0)  # Note os .0 para float
 
-                    valor_range = st.slider(
-                        "Faixa de Valores Devidos (R$)",
-                        min_value=min_val,
-                        max_value=max_val,
-                        value=(min_val, max_val),
-                        step=step_val,  # Agora todos são float
-                        help="Selecione a faixa de valores desejada"
-                    )
+                    st.markdown("**Faixa de Valores Devidos (R$):**")
+                    
+                    col_valor_min, col_valor_max = st.columns(2)
+
+                    with col_valor_min:
+                        valor_min = st.number_input(
+                            "Valor Mínimo (R$)", min_value=0.0, value=float(min_val), step=1.0, format="%.2f"
+                        )
+                    with col_valor_max:
+                        valor_max = st.number_input(
+                            "Valor Máximo (R$)", min_value=valor_min, value=float(max_val), step=1.0, format="%.2f"
+                        )
+                    valor_range = (valor_min, valor_max)
                     
                     # Filtro por categorias pré-definidas de valores
                     valor_categoria = st.selectbox(
@@ -136,13 +141,18 @@ if page == "📋 Lista de Devedores":
                     min_dias = int(st.session_state.df['atraso'].min())
                     max_dias = int(st.session_state.df['atraso'].max())
                     
-                    dias_range = st.slider(
-                        "Dias em Atraso",
-                        min_value=min_dias,
-                        max_value=max_dias,
-                        value=(min_dias, max_dias),
-                        help="Selecione a faixa de dias em atraso"
-                    )
+                    st.markdown("**Dias em Atraso (faixa personalizada):**")
+                    col_min, col_max = st.columns(2)
+                    with col_min:
+                        dias_min = st.number_input(
+                                "Mínimo de Dias", min_value=0, value=min_dias, step=1
+                            )
+                    with col_max:
+                        dias_max = st.number_input(
+                                "Máximo de Dias", min_value=dias_min, value=max_dias, step=1
+                            )
+                    
+                    dias_range = (dias_min, dias_max)
                     
                     # Filtro por status de atraso
                     status_atraso = st.selectbox(
