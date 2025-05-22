@@ -1,138 +1,173 @@
+# Cobrancas.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import datetime, date
+import calendar # Para o calendário
 
-# Configuração inicial
-if 'df' not in st.session_state:
-    st.session_state.df = None
-if 'filtered_df' not in st.session_state:
-    st.session_state.filtered_df = None
+# --- CONFIGURAÇÃO DA PÁGINA (DEVE SER A PRIMEIRA CHAMADA STREAMLIT) ---
+st.set_page_config(
+    page_title="Sistema de Cobranças - Agendamento",
+    page_icon="🗓️",
+    layout="wide",
+    initial_sidebar_state="collapsed" # Pode ser collapsed ou expanded
+)
 
-# Função para carregar dados
-def load_excel(file):
-    try:
-        df = pd.read_excel(file, engine='openpyxl')
-        # Garantir que as colunas necessárias existam
-        if 'data_cobranca' not in df.columns:
-            df['data_cobranca'] = pd.NaT
-        if 'status' not in df.columns:
-            df['status'] = 'Pendente'
-        return df
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
-        return None
+from database import init_db, get_session, Devedor, StatusDevedor
+from devedores_service import (
+    load_devedores_from_db,
+    agendar_cobranca_in_db,
+    marcar_como_pago_in_db # Pode ser usado aqui também
+)
 
-def sidebar():
-    with st.sidebar:
-        st.header("📂 Carregar Planilha")
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo de devedores",
-            type=["xlsx", "xls"],
-            key="file_uploader"
-        )
-        
-        if uploaded_file is not None:
-            df = load_excel(uploaded_file)
-            if df is not None:
-                st.session_state.df = df
-                st.session_state.filtered_df = df.copy()
-                st.success("Dados carregados com sucesso!")
+if 'db_engine' not in st.session_state:
+    st.session_state.db_engine = init_db()
+if 'df_cobrancas' not in st.session_state: # DataFrame específico para cobranças
+    st.session_state.df_cobrancas = None
+if 'should_reload_df_cobrancas' not in st.session_state:
+    st.session_state.should_reload_df_cobrancas = True
 
-def atualizar_cobranca(index):
-    hoje = datetime.now()
-    nova_data = hoje + timedelta(days=10)
-    st.session_state.filtered_df.at[index, 'data_cobranca'] = nova_data
-    st.session_state.filtered_df.at[index, 'ultima_cobranca'] = hoje.strftime('%d/%m/%Y')
-    st.rerun()
 
-def marcar_como_pago(index):
-    st.session_state.filtered_df.at[index, 'status'] = 'Pago'
-    st.session_state.filtered_df.at[index, 'data_pagamento'] = datetime.now().strftime('%d/%m/%Y')
-    st.rerun()
+def exibir_calendario_cobrancas_tab():
+    st.title("🗓 Calendário de Cobranças")
 
-def remover_devedor(index):
-    st.session_state.filtered_df = st.session_state.filtered_df.drop(index)
-    st.rerun()
+    # Carrega dados do DB na primeira execução ou se a flag `should_reload_df_cobrancas` for True
+    if st.session_state.should_reload_df_cobrancas:
+        # Carrega o DF completo com as colunas de cobrança
+        st.session_state.df_cobrancas = load_devedores_from_db(st.session_state.db_engine)
+        st.session_state.should_reload_df_cobrancas = False
 
-def exibir_devedores():
-    st.title("📋 Controle de Cobranças")
-    
-    if st.session_state.df is None:
-        st.warning("Por favor, carregue um arquivo Excel na sidebar")
+    if st.session_state.df_cobrancas.empty:
+        st.info("Nenhuma cobrança agendada encontrada no banco de dados.")
         return
-    
-    # Filtros
-    with st.expander("🔍 Filtros", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            filtro_status = st.selectbox(
-                "Status",
-                options=["Todos", "Pendente", "Pago"],
-                index=0
-            )
-        with col2:
-            ordenar_por = st.selectbox(
-                "Ordenar por",
-                options=["Data de Cobrança", "Valor Devido", "Dias em Atraso"],
-                index=0
-            )
-    
-    # Aplicar filtros
-    df_filtrado = st.session_state.df.copy()
-    
-    if filtro_status != "Todos":
-        df_filtrado = df_filtrado[df_filtrado['status'] == filtro_status]
-    
-    if ordenar_por == "Data de Cobrança":
-        df_filtrado = df_filtrado.sort_values('data_cobranca', ascending=True)
-    elif ordenar_por == "Valor Devido":
-        df_filtrado = df_filtrado.sort_values('valortotal', ascending=False)
+
+    df_agendados = st.session_state.df_cobrancas[
+        (st.session_state.df_cobrancas['status'] == StatusDevedor.AGENDADO.value) |
+        (st.session_state.df_cobrancas['status'] == StatusDevedor.PENDENTE.value)
+    ].copy() # Trabalha apenas com devedores não pagos ou agendados
+
+    # Garante que 'data_cobranca' seja um tipo datetime antes de acessar .dt.date
+    if 'data_cobranca' in df_agendados.columns and pd.api.types.is_datetime64_any_dtype(df_agendados['data_cobranca']):
+        df_agendados['data_cobranca_display'] = df_agendados['data_cobranca'].dt.date.fillna(pd.NaT)
     else:
-        df_filtrado = df_filtrado.sort_values('atraso', ascending=False)
-    
-    st.session_state.filtered_df = df_filtrado
-    
-    # Exibir cards
-    st.subheader(f"📌 {len(df_filtrado)} devedores encontrados")
-    
-    for index, row in df_filtrado.iterrows():
-        with st.container(border=True):
-            cols = st.columns([3, 1, 1, 1])
-            
-            with cols[0]:
-                st.markdown(f"### {row['nome']}")
-                st.caption(f"📞 {row.get('telefone', 'N/A')} | 📅 {row.get('ultima_cobranca', 'Nunca cobrado')}")
-                st.write(f"**Valor devido:** R$ {row['valortotal']:,.2f} | **Atraso:** {row['atraso']} dias")
-                
-                if pd.notna(row['data_cobranca']):
-                    data_cob = row['data_cobranca'].strftime('%d/%m/%Y') if isinstance(row['data_cobranca'], pd.Timestamp) else row['data_cobranca']
-                    st.write(f"⏳ **Próxima cobrança:** {data_cob}")
-                
-                st.write(f"**Status:** {'✅ Pago' if row['status'] == 'Pago' else '⚠️ Pendente'}")
-            
-            with cols[1]:
-                if st.button("📞 Cobrado", key=f"cobrar_{index}", use_container_width=True):
-                    atualizar_cobranca(index)
-            
-            with cols[2]:
-                if st.button("💳 Pago", key=f"pago_{index}", disabled=(row['status'] == 'Pago'), 
-                           use_container_width=True):
-                    marcar_como_pago(index)
-            
-            with cols[3]:
-                if st.button("❌ Remover", key=f"remover_{index}", use_container_width=True):
-                    remover_devedor(index)
+        df_agendados['data_cobranca_display'] = pd.Series([pd.NaT] * len(df_agendados)) # Coluna vazia se não for datetime
 
-def main():
-    st.set_page_config(
-        page_title="Sistema de Cobranças",
-        page_icon="💰",
-        layout="wide"
-    )
-    
-    sidebar()
-    exibir_devedores()
+    st.subheader("Agendar Nova Cobrança / Gerenciar Agendamentos")
 
+    # Seção para agendar/reagendar cobrança
+    with st.expander("📝 Agendar/Reagendar Cobrança", expanded=False):
+        devedores_pendentes_ou_agendados = df_agendados[
+            (df_agendados['status'] == StatusDevedor.PENDENTE.value) |
+            (df_agendados['status'] == StatusDevedor.AGENDADO.value)
+        ]
+
+        if devedores_pendentes_ou_agendados.empty:
+            st.info("Todos os devedores já foram pagos ou não há devedores para agendar.")
+        else:
+            devedor_options = ["Selecione um devedor"] + [
+                f"{row['nome']} (ID: {row['id']}) - Dívida: R$ {row['valortotal']:.2f}"
+                for index, row in devedores_pendentes_ou_agendados.iterrows()
+            ]
+            selected_devedor_info = st.selectbox(
+                "Selecione o Devedor para Agendar/Reagendar Cobrança",
+                options=devedor_options,
+                key="select_devedor_agendamento"
+            )
+
+            if selected_devedor_info != "Selecione um devedor":
+                devedor_id = int(selected_devedor_info.split("(ID: ")[1].split(")")[0])
+                current_devedor = df_agendados[df_agendados['id'] == devedor_id].iloc[0]
+
+                st.write(f"Devedor selecionado: **{current_devedor['nome']}**")
+                st.write(f"Status atual: **{current_devedor['status']}**")
+
+                # Se já tiver uma data de cobrança, sugere no seletor
+                default_date = current_devedor['data_cobranca_display'] if pd.notna(current_devedor['data_cobranca_display']) else date.today()
+
+                data_programada = st.date_input(
+                    "Data para Programar a Cobrança",
+                    value=default_date,
+                    min_value=date.today(), # Não permite agendar no passado
+                    key=f"data_cobranca_input_{devedor_id}"
+                )
+
+                if st.button("Agendar Cobrança", key=f"agendar_cobranca_btn_{devedor_id}"):
+                    success, message = agendar_cobranca_in_db(st.session_state.db_engine, devedor_id, data_programada)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    st.session_state.should_reload_df_cobrancas = True
+                    st.rerun()
+
+    st.subheader("Próximas Cobranças Agendadas")
+
+    df_proximas_cobrancas = df_agendados[
+        (df_agendados['status'] == StatusDevedor.AGENDADO.value) &
+        (df_agendados['data_cobranca_display'] >= date.today())
+    ].sort_values(by='data_cobranca_display')
+
+    if not df_proximas_cobrancas.empty:
+        st.dataframe(
+            df_proximas_cobrancas[[
+                'nome', 'valortotal', 'atraso', 'telefone', 'data_cobranca_display', 'ultima_cobranca', 'status'
+            ]].rename(columns={
+                'data_cobranca_display': 'Data Programada',
+                'ultima_cobranca': 'Última Cobrança'
+            }),
+            use_container_width=True,
+            column_config={
+                "valortotal": st.column_config.NumberColumn(
+                    "Valor Total", format="R$ %.2f"
+                ),
+                "atraso": st.column_config.NumberColumn(
+                    "Dias em Atraso", format="%d dias"
+                ),
+                "Data Programada": st.column_config.DateColumn(
+                    "Data Programada", format="DD/MM/YYYY"
+                ),
+                "Última Cobrança": st.column_config.DateColumn(
+                    "Última Cobrança", format="DD/MM/YYYY"
+                )
+            },
+            hide_index=True
+        )
+    else:
+        st.info("Nenhuma cobrança futura agendada.")
+
+    st.subheader("Eventos de Cobrança do Mês")
+
+    selected_month = st.selectbox("Selecione o Mês", range(1, 13), index=datetime.now().month - 1)
+    selected_year = st.selectbox("Selecione o Ano", range(datetime.now().year - 1, datetime.now().year + 2), index=1)
+
+    cal = calendar.HTMLCalendar(calendar.SUNDAY)
+    month_html = cal.formatmonth(selected_year, selected_month)
+
+    # Adicionar eventos ao calendário
+    events = {}
+    # Filtra devedores para o mês e ano selecionados que tenham data_cobranca válida
+    df_month_events = df_agendados[
+        (pd.notna(df_agendados['data_cobranca_display'])) &
+        (df_agendados['data_cobranca_display'].apply(lambda x: x.month) == selected_month) &
+        (df_agendados['data_cobranca_display'].apply(lambda x: x.year) == selected_year)
+    ]
+
+
+    for index, row in df_month_events.iterrows():
+        day = row['data_cobranca_display'].day
+        if day not in events:
+            events[day] = []
+        events[day].append(f"**{row['nome']}** (R$ {row['valortotal']:.2f})")
+
+    for day, day_events in events.items():
+        event_html = "<br>".join(day_events)
+        month_html = month_html.replace(
+            f'<td class="day">{day}</td>',
+            f'<td class="day"><b>{day}</b><br><small>{event_html}</small></td>'
+        )
+
+    st.markdown(month_html, unsafe_allow_html=True)
+
+
+# Chamada principal
 if __name__ == "__main__":
-    main()
+    exibir_calendario_cobrancas_tab()
