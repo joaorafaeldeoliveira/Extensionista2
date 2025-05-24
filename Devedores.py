@@ -288,14 +288,14 @@ def render_data_controls():
             st.session_state.page_number = 1 # Volta para a primeira página.
             st.session_state.valor_categorias_selecionadas_state = ["Todos"] # Reseta filtros de categoria.
             st.session_state.status_atraso_selecionadas_state = ["Todos"] # Reseta filtros de status.
-            st.session_state.should_reload_df = True # Marca para recarregar o DF principal.
+            st.session_state.should_reload_df = True 
             st.rerun() # Reinicia o script.
 
     with col2:
-        # Botão para exportar a tabela filtrada.
+
         if st.button("📤 Exportar Tabela Filtrada para Excel", key="export_filtered_excel_btn"):
             if st.session_state.filtered_df is not None and not st.session_state.filtered_df.empty:
-                # Usa a função de serviço para exportar o DataFrame filtrado.
+
                 excel_data, export_message = export_devedores_to_excel(st.session_state.filtered_df)
                 if excel_data:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -312,12 +312,10 @@ def render_data_controls():
             else:
                 st.warning("Nenhum dado disponível para exportar")
 
-# Função principal para exibir a lista de devedores e suas interações.
 def show_lista_devedores_tab(filters):
 
     st.title("📋 Lista de Devedores")
 
-    # Seção para adicionar um novo devedor manualmente (expansível).
     with st.expander("➕ Adicionar Novo Devedor", expanded=False):
         with st.form("novo_devedor_form"): # Formulário Streamlit para agrupamento de widgets.
             pessoa_id = st.text_input("ID Pessoa (Opcional - do seu sistema original, se houver)", max_chars=50, key="new_devedor_pessoa_id_form")
