@@ -168,6 +168,5 @@ def exibir_calendario_cobrancas_tab():
     st.markdown(month_html, unsafe_allow_html=True)
 
 
-# Chamada principal
 if __name__ == "__main__":
     exibir_calendario_cobrancas_tab()
