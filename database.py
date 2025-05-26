@@ -25,6 +25,7 @@ class Devedor(Base):
     ultima_cobranca = Column(DateTime, nullable=True)
     status = Column(Enum(StatusDevedor), default=StatusDevedor.PENDENTE, nullable=False)
     data_pagamento = Column(DateTime, nullable=True)
+    fase_cobranca = Column(Integer, default=1, nullable=False)
 
     def __repr__(self):
         return f"<Devedor(id={self.id}, pessoa='{self.pessoa}', nome='{self.nome}', valortotal={self.valortotal})>"
