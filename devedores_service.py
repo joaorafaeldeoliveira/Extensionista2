@@ -204,31 +204,32 @@ def export_devedores_to_excel(df_to_export):
         return None, f"Erro ao exportar dados para Excel: {e}"
 
 # Nova função para agendar cobrança (será usada em Cobrancas.py)
-def marcar_cobranca_feita_e_reagendar_in_db(engine, devedor_id):
-    session = get_session(engine)
+def marcar_cobranca_feita_e_reagendar_in_db(db_engine, devedor_id, data_programada=None):
+    session = get_session(db_engine)
     try:
-        devedor = session.query(Devedor).filter(Devedor.id == devedor_id).first()
+        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
         if not devedor:
-            return False, "Devedor não encontrado."
-
-        if devedor.status == StatusDevedor.PAGO.value:
-            return False, "Devedor já está pago, não é possível marcar cobrança."
-
-        current_fase = devedor.fase_cobranca
-
-        nova_fase = current_fase + 1 if current_fase < 3 else 3 # Incrementa até 3, depois mantém 3
-
-        devedor.fase_cobranca = nova_fase
-        devedor.data_cobranca = date.today() + timedelta(days=10)
-        devedor.ultima_cobranca = date.today() # Registra a data da ação de cobrança como hoje
+            return False, "Devedor não encontrado"
+        
+        # Marca a última cobrança como hoje
+        devedor.ultima_cobranca = datetime.now().date()
+        
+        # Se foi passada uma data programada, usa ela
+        if data_programada:
+            devedor.data_cobranca = data_programada
+        else:
+            # Caso contrário, agenda para 10 dias depois (comportamento padrão)
+            devedor.data_cobranca = datetime.now().date() + timedelta(days=10)
+        
+        # Avança a fase se não for a última (fase 3)
+        if devedor.fase_cobranca < 3:
+            devedor.fase_cobranca += 1
+        
         devedor.status = StatusDevedor.AGENDADO.value
-
         session.commit()
-        return True, f"Cobrança marcada como feita. Nova cobrança agendada para {devedor.data_cobranca.strftime('%d/%m/%Y')}. Fase da Cobrança: {nova_fase}."
+        return True, "Cobrança registrada e próxima agendada com sucesso"
     except Exception as e:
         session.rollback()
-        # Em produção, logar o erro e:
-        # return False, f"Erro ao marcar cobrança feita: {str(e)}"
-        raise # Para depuração, pode ser útil relançar o erro
+        return False, f"Erro ao atualizar devedor: {str(e)}"
     finally:
         session.close()

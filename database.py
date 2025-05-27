@@ -6,9 +6,9 @@ import enum
 
 # Definição do Enum para StatusDevedor
 class StatusDevedor(enum.Enum):
-    PENDENTE = "Pendente"
-    AGENDADO = "Agendado"
-    PAGO = "Pago"
+    PENDENTE = "PENDENTE"  
+    AGENDADO = "AGENDADO" 
+    PAGO = "PAGO"
 
 Base = declarative_base()
 
