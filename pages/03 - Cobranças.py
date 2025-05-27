@@ -17,8 +17,7 @@ try:
         load_devedores_from_db,
         marcar_cobranca_feita_e_reagendar_in_db,
         marcar_como_pago_in_db,
-        remover_devedor_from_db,
-        marcar_cobranca_feita_e_reagendar_in_db
+        remover_devedor_from_db
     )
 except ImportError as e:
     st.error(f"Erro ao importar módulos: {e}. Verifique se 'database.py' e 'devedores_service.py' estão corretos e no PYTHONPATH.")
@@ -33,6 +32,9 @@ if 'df_cobrancas' not in st.session_state:
 
 if 'should_reload_df_cobrancas' not in st.session_state:
     st.session_state.should_reload_df_cobrancas = True
+
+if 'selected_date' not in st.session_state:
+    st.session_state.selected_date = date.today()
 
 def carregar_dados_devedores():
     if st.session_state.should_reload_df_cobrancas or st.session_state.df_cobrancas is None:
@@ -50,6 +52,69 @@ def carregar_dados_devedores():
         st.session_state.should_reload_df_cobrancas = False
     return st.session_state.df_cobrancas
 
+def exibir_devedor_card(row, from_calendar=False):
+    """Exibe os detalhes de um devedor em um card com ações."""
+    devedor_id = int(row['id'])
+    fase_atual = int(row.get('fase_cobranca', 1))
+
+    with st.container(border=True):
+        col_info, col_actions = st.columns([3, 1.2])
+
+        with col_info:
+            st.markdown(f"#### {row['nome']}")
+            
+            status_text = row['status']
+            data_cob_fmt = "N/A"
+            if pd.notna(row['data_cobranca']):
+                data_cob_fmt = row['data_cobranca'].strftime('%d/%m/%Y')
+                if row['status'] == StatusDevedor.AGENDADO.value:
+                    status_text += f" (Próxima: {data_cob_fmt})"
+            
+            st.caption(f"ID Devedor: {devedor_id} | ID Pessoa: {row.get('pessoa', 'N/A')} | 📞 {row.get('telefone', 'N/A')}")
+            st.markdown(f"**Status:** {status_text}")
+            st.markdown(f"**Fase da Cobrança:** {fase_atual}/3")
+            st.write(f"**Valor Dívida:** R$ {row['valortotal']:,.2f} | **Atraso:** {row['atraso']} dias")
+            
+            data_pag_str = row['data_pagamento'].strftime('%d/%m/%Y') if pd.notna(row['data_pagamento']) else 'Não pago'
+            st.markdown(f"**Data Pagamento:** {data_pag_str}")
+            
+            ultima_cob_registrada_str = row['ultima_cobranca'].strftime('%d/%m/%Y') if pd.notna(row['ultima_cobranca']) else 'Nenhuma registrada'
+            st.markdown(f"**Última Cobrança Registrada:** {ultima_cob_registrada_str}")
+
+        with col_actions:
+            st.write("")
+            help_text_cobranca_feita = "Marca a cobrança como realizada, avança a fase e agenda a próxima para 10 dias."
+            if fase_atual == 3:
+                help_text_cobranca_feita += " Esta é a última fase de avanço automático."
+
+            if st.button("➡️ Cobrança Feita", key=f"cobranca_feita_btn_{devedor_id}_{'cal' if from_calendar else 'acoes'}", use_container_width=True, help=help_text_cobranca_feita):
+                success, message = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id)
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                st.session_state.should_reload_df_cobrancas = True
+                st.rerun()
+
+            if st.button("✅ Marcar como Pago", key=f"pago_btn_{devedor_id}_{'cal' if from_calendar else 'acoes'}", use_container_width=True, disabled=(row['status'] == StatusDevedor.PAGO.value)):
+                success, message = marcar_como_pago_in_db(st.session_state.db_engine, devedor_id)
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                st.session_state.should_reload_df_cobrancas = True
+                st.rerun()
+
+            if st.button("❌ Remover Devedor", key=f"remover_btn_{devedor_id}_{'cal' if from_calendar else 'acoes'}", use_container_width=True):
+                success, message = remover_devedor_from_db(st.session_state.db_engine, devedor_id)
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                st.session_state.should_reload_df_cobrancas = True
+                st.rerun()
+        st.markdown("---")
+
 def exibir_acoes_cobranca_tab():
     st.header("🎯 Ações de Cobrança dos Devedores")
     
@@ -59,6 +124,7 @@ def exibir_acoes_cobranca_tab():
         st.info("Nenhum devedor encontrado. Adicione devedores para gerenciar as cobranças.")
         return
 
+    # Filter for debtors that are not paid
     df_para_acoes = df_cobrancas_completo[
         df_cobrancas_completo['status'] != StatusDevedor.PAGO.value
     ].copy()
@@ -86,67 +152,8 @@ def exibir_acoes_cobranca_tab():
         df_para_acoes = df_para_acoes.sort_values(by=sort_column, ascending=ascending_order)
 
     for _, row in df_para_acoes.iterrows():
-        devedor_id = int(row['id'])
-        fase_atual = int(row.get('fase_cobranca', 1))
+        exibir_devedor_card(row, from_calendar=False)
 
-        with st.container(border=True):
-            col_info, col_actions = st.columns([3, 1.2])
-
-            with col_info:
-                st.markdown(f"#### {row['nome']}")
-                
-                status_text = row['status']
-                data_cob_fmt = "N/A"
-                if pd.notna(row['data_cobranca']):
-                    data_cob_fmt = row['data_cobranca'].strftime('%d/%m/%Y')
-                    if row['status'] == StatusDevedor.AGENDADO.value:
-                         status_text += f" (Próxima: {data_cob_fmt})"
-                
-                st.caption(f"ID Devedor: {devedor_id} | ID Pessoa: {row.get('pessoa', 'N/A')} | 📞 {row.get('telefone', 'N/A')}")
-                st.markdown(f"**Status:** {status_text}")
-                st.markdown(f"**Fase da Cobrança:** {fase_atual}/3")
-                st.write(f"**Valor Dívida:** R$ {row['valortotal']:,.2f} | **Atraso:** {row['atraso']} dias")
-                
-                data_pag_str = row['data_pagamento'].strftime('%d/%m/%Y') if pd.notna(row['data_pagamento']) else 'Não pago'
-                st.markdown(f"**Data Pagamento:** {data_pag_str}")
-                
-                ultima_cob_registrada_str = row['ultima_cobranca'].strftime('%d/%m/%Y') if pd.notna(row['ultima_cobranca']) else 'Nenhuma registrada'
-                st.markdown(f"**Última Cobrança Registrada:** {ultima_cob_registrada_str}")
-
-            with col_actions:
-                st.write("")
-                help_text_cobranca_feita = "Marca a cobrança como realizada, avança a fase e agenda a próxima para 10 dias."
-                if fase_atual == 3:
-                    help_text_cobranca_feita += " Esta é a última fase de avanço automático."
-
-                if st.button("➡️ Cobrança Feita", key=f"cobranca_feita_btn_{devedor_id}", use_container_width=True, help=help_text_cobranca_feita):
-                    success, message = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.should_reload_df_cobrancas = True
-                    st.rerun()
-
-                if st.button("✅ Marcar como Pago", key=f"pago_btn_{devedor_id}_acoes", use_container_width=True, disabled=(row['status'] == StatusDevedor.PAGO.value)):
-                    success, message = marcar_como_pago_in_db(st.session_state.db_engine, devedor_id)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.should_reload_df_cobrancas = True
-                    st.rerun()
-
-                if st.button("❌ Remover Devedor", key=f"remover_btn_{devedor_id}_acoes", use_container_width=True):
-                    confirm_remove = st.empty()
-                    success, message = remover_devedor_from_db(st.session_state.db_engine, devedor_id)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.should_reload_df_cobrancas = True
-                    st.rerun()
-            st.markdown("---")
 
 def exibir_calendario_cobrancas_tab():
     st.header("🗓️ Calendário e Agendamentos")
@@ -199,14 +206,13 @@ def exibir_calendario_cobrancas_tab():
                 )
 
                 if st.button("Agendar Cobrança", key=f"agendar_cobranca_btn_calendario_{devedor_id_selecionado}"):
-
                     if isinstance(data_programada, datetime):
                         data_programada = data_programada.date()
                     
                     success, message = marcar_cobranca_feita_e_reagendar_in_db(
                         st.session_state.db_engine, 
                         devedor_id_selecionado,
-                        data_programada  # Passando a data selecionada no calendário
+                        data_programada
                     )
                     if success:
                         st.success(message)
@@ -250,8 +256,15 @@ def exibir_calendario_cobrancas_tab():
         st.warning("DataFrame 'df_agendados' não encontrado ou coluna 'data_cobranca_display' ausente.")
         df_month_events = pd.DataFrame()
 
+    # The HTML for clicking on days is removed since the new style sheet
+    # will not support interactive elements directly injected into HTML
+    # by st.markdown in the same way st.components.v1.html does.
+    # The logic for `st.session_state.selected_date` will be handled
+    # by a date_input or similar if interactive selection is needed.
+
     for day, count in events_by_day.items():
         event_text = f"<br><span class='event-count'>{count} cobrança(s)</span>"
+        # Find the exact day number to replace it with interactive content
         month_html = month_html.replace(
             f'>{day}</td>',
             f'>{day}{event_text}</td>', 1 
@@ -356,31 +369,26 @@ def exibir_calendario_cobrancas_tab():
 
     st.markdown(month_html, unsafe_allow_html=True)
 
-    st.subheader("Próximas Cobranças Agendadas (Visão Geral)")
-    df_proximas_cobrancas = df_agendados[
-        (df_agendados['status'] == StatusDevedor.AGENDADO.value) &
-        (df_agendados['data_cobranca_display'].apply(lambda x: x >= date.today() if pd.notna(x) else False))
-    ].sort_values(by='data_cobranca_display')
+    # Added a date input to select a specific day for details,
+    # as the previous click-based selection in HTML component is no longer viable.
+    st.session_state.selected_date = st.date_input(
+        "Selecione uma data para ver as cobranças",
+        value=st.session_state.selected_date,
+        key="date_picker_for_cobrancas"
+    )
 
-    if not df_proximas_cobrancas.empty:
-        st.dataframe(
-            df_proximas_cobrancas[[
-                'nome', 'valortotal', 'atraso', 'telefone', 'data_cobranca_display', 'fase_cobranca', 'status'
-            ]].rename(columns={
-                'data_cobranca_display': 'Data Programada',
-                'fase_cobranca': 'Fase Cobrança'
-            }),
-            use_container_width=True,
-            column_config={
-                "valortotal": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
-                "atraso": st.column_config.NumberColumn("Dias em Atraso", format="%d dias"),
-                "Data Programada": st.column_config.DateColumn("Data Programada", format="DD/MM/YYYY"),
-                "Fase Cobrança": st.column_config.NumberColumn("Fase", format="%d/3"),
-            },
-            hide_index=True
-        )
+    st.subheader(f"📌 Cobranças para {st.session_state.selected_date.strftime('%d/%m/%Y')}")
+    
+    df_cobrancas_dia = df_agendados[
+        (pd.notna(df_agendados['data_cobranca_display'])) &
+        (df_agendados['data_cobranca_display'] == st.session_state.selected_date)
+    ]
+    
+    if not df_cobrancas_dia.empty:
+        for _, row in df_cobrancas_dia.iterrows():
+            exibir_devedor_card(row, from_calendar=True)
     else:
-        st.info("Nenhuma cobrança futura agendada para exibir.")
+        st.info(f"Nenhuma cobrança agendada para {st.session_state.selected_date.strftime('%d/%m/%Y')}")
 
 if __name__ == "__main__":
     st.title("📈 Sistema de Gestão de Cobranças")
