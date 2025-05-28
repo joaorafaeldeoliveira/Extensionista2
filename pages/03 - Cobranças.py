@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import calendar
 import numpy as np
-
+#toptotpotpt
 st.set_page_config(
     page_title="Sistema de Cobranças - Agendamento",
     page_icon="📈",
@@ -369,8 +369,6 @@ def exibir_calendario_cobrancas_tab():
 
     st.markdown(month_html, unsafe_allow_html=True)
 
-    # Added a date input to select a specific day for details,
-    # as the previous click-based selection in HTML component is no longer viable.
     st.session_state.selected_date = st.date_input(
         "Selecione uma data para ver as cobranças",
         value=st.session_state.selected_date,
