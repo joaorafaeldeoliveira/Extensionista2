@@ -116,44 +116,111 @@ def exibir_devedor_card(row, from_calendar=False):
         st.markdown("---")
 
 def exibir_acoes_cobranca_tab():
-    st.header("🎯 Ações de Cobrança dos Devedores")
+    st.header("🎯 Ações de Cobrança para Hoje") # Título atualizado
     
-    df_cobrancas_completo = carregar_dados_devedores()
+    df_cobrancas_completo = carregar_dados_devedores() 
 
     if df_cobrancas_completo is None or df_cobrancas_completo.empty:
-        st.info("Nenhum devedor encontrado. Adicione devedores para gerenciar as cobranças.")
+        st.info("Nenhum devedor encontrado no sistema.")
         return
 
-    # Filter for debtors that are not paid
-    df_para_acoes = df_cobrancas_completo[
-        df_cobrancas_completo['status'] != StatusDevedor.PAGO.value
-    ].copy()
+    hoje = date.today()
+
+    # --- FILTRO DE STATUS E DATA ATUALIZADO ---
+    # 1. Devedor não pode estar Pago
+    condicao_nao_pago = df_cobrancas_completo['status'] != StatusDevedor.PAGO.value
+    
+    # 2. Condições para aparecer na lista de ações de hoje:
+    #    - Ou o status NÃO é 'Agendado' (ex: 'Pendente', 'Atrasado' etc.)
+    #    - Ou o status É 'Agendado' E a 'data_cobranca' é hoje.
+    
+    # Garante que a coluna 'data_cobranca' é tratada como data para comparação
+    # A função carregar_dados_devedores já deve converter para datetime.
+    # Usamos .dt.date para comparar apenas a parte da data.
+    condicao_para_acoes_hoje = (
+        (df_cobrancas_completo['status'] != StatusDevedor.AGENDADO.value) |
+        (
+            (df_cobrancas_completo['status'] == StatusDevedor.AGENDADO.value) &
+            (pd.to_datetime(df_cobrancas_completo['data_cobranca']).dt.date == hoje)
+        )
+    )
+    
+    df_para_acoes = df_cobrancas_completo[condicao_nao_pago & condicao_para_acoes_hoje].copy()
+    # --- FIM DO FILTRO DE STATUS E DATA ---
 
     if df_para_acoes.empty:
-        st.success("🎉 Todos os devedores já foram pagos ou não há devedores ativos para cobrança!")
+        st.info(f"Nenhum devedor requer ação imediata hoje ({hoje.strftime('%d/%m/%Y')}).")
+        st.caption("Isso inclui devedores pendentes ou com cobrança agendada para hoje. Verifique o calendário para agendamentos futuros.")
         return
 
-    st.write("Gerencie as cobranças dos devedores abaixo. Ao marcar 'Cobrança Feita', uma nova cobrança será agendada para daqui a 10 dias e a fase da cobrança será avançada (até a fase 3).")
+    # --- Filtro por nome do devedor (mantido da lógica anterior) ---
+    filtro_nome_acoes = st.text_input(
+        "Buscar devedor por nome na lista abaixo:", # Label atualizado
+        key="filtro_nome_devedor_acoes_hoje" # Chave atualizada para evitar conflito se houver outra
+    )
 
+    df_filtrado_nome = df_para_acoes 
+    if filtro_nome_acoes:
+        df_filtrado_nome = df_para_acoes[
+            df_para_acoes['nome'].str.contains(filtro_nome_acoes, case=False, na=False)
+        ]
+
+    if df_filtrado_nome.empty:
+        if filtro_nome_acoes: 
+            st.info(f"Nenhum devedor encontrado com o nome '{filtro_nome_acoes}' que requer ação hoje.")
+        # Se não há filtro de nome, mas df_para_acoes (após filtro de data/status) já estava vazio,
+        # a mensagem anterior ("Nenhum devedor requer ação imediata hoje") já foi exibida.
+        return 
+    
+    st.write("Gerencie as cobranças dos devedores listados abaixo. Estes são os devedores pendentes ou com cobrança agendada para hoje.")
+
+    # Lógica de ordenação (mantida da lógica anterior)
     sort_options = {
-        "Data da Próxima Cobrança (Mais Próxima)": ("data_cobranca", True),
+        "Data da Próxima Cobrança (Mais Próxima)": ("data_cobranca", True), # Relevante para os agendados de hoje
         "Fase da Cobrança (Menor Primeiro)": ("fase_cobranca", True),
         "Nome (A-Z)": ("nome", True),
         "Valor da Dívida (Maior Primeiro)": ("valortotal", False),
-        "Dias em Atraso (Maior Primeiro)": ("atraso", False),
+        "Dias em Atraso (Maior Primeiro)": ("atraso", False), 
     }
-    sort_by_desc = st.selectbox("Ordenar devedores por:", options=list(sort_options.keys()), index=0)
+    sort_by_desc = st.selectbox(
+        "Ordenar devedores por:", 
+        options=list(sort_options.keys()), 
+        index=0, 
+        key="selectbox_ordenar_devedores_acoes_hoje" 
+    )
     sort_column, ascending_order = sort_options[sort_by_desc]
     
+    df_final_para_exibir = df_filtrado_nome.copy()
+
     if sort_column == "data_cobranca":
-        df_para_acoes['data_cobranca_sort'] = df_para_acoes['data_cobranca'].fillna(pd.Timestamp.max if ascending_order else pd.Timestamp.min)
-        df_para_acoes = df_para_acoes.sort_values(by='data_cobranca_sort', ascending=ascending_order).drop(columns=['data_cobranca_sort'])
+        fill_value_for_nat = pd.Timestamp.max 
+        if not ascending_order: 
+            fill_value_for_nat = pd.Timestamp.min 
+        df_final_para_exibir['data_cobranca_sort'] = df_final_para_exibir['data_cobranca'].fillna(fill_value_for_nat)
+        df_final_para_exibir = df_final_para_exibir.sort_values(
+            by=['data_cobranca_sort', 'nome'], 
+            ascending=[ascending_order, True] 
+        ).drop(columns=['data_cobranca_sort'])
+    elif sort_column == "atraso":
+        df_final_para_exibir['atraso_sort'] = pd.to_numeric(df_final_para_exibir['atraso'], errors='coerce').fillna(0)
+        df_final_para_exibir = df_final_para_exibir.sort_values(
+            by=['atraso_sort', 'nome'], 
+            ascending=[ascending_order, True]
+        ).drop(columns=['atraso_sort'])
     else:
-        df_para_acoes = df_para_acoes.sort_values(by=sort_column, ascending=ascending_order)
+        df_final_para_exibir = df_final_para_exibir.sort_values(
+            by=[sort_column, 'nome'], 
+            ascending=[ascending_order, True]
+        )
+    
+    st.markdown(f"--- \nExibindo **{len(df_final_para_exibir)}** devedor(es) para ação hoje.")
 
-    for _, row in df_para_acoes.iterrows():
-        exibir_devedor_card(row, from_calendar=False)
-
+    if not df_final_para_exibir.empty:
+        for _, row in df_final_para_exibir.iterrows():
+            exibir_devedor_card(row, from_calendar=False) 
+    elif not filtro_nome_acoes:
+        # Esta condição é redundante se a verificação df_para_acoes.empty já ocorreu
+        st.info("Não há devedores para exibir com os critérios atuais para hoje.")
 
 def exibir_calendario_cobrancas_tab():
     st.header("🗓️ Calendário e Agendamentos")
@@ -171,7 +238,7 @@ def exibir_calendario_cobrancas_tab():
 
     df_agendados['data_cobranca_display'] = df_agendados['data_cobranca'].dt.date
 
-    with st.expander("📝 Agendar/Reagendar Cobrança Manualmente", expanded=False):
+    with st.expander("📝 Agendar/Reagendar Cobrança Manualmente", expanded=True): # Pode deixar expanded=True para melhor UX
         devedores_para_agendar = df_cobrancas_completo[
             (df_cobrancas_completo['status'] == StatusDevedor.PENDENTE.value) |
             (df_cobrancas_completo['status'] == StatusDevedor.AGENDADO.value)
@@ -180,100 +247,117 @@ def exibir_calendario_cobrancas_tab():
         if devedores_para_agendar.empty:
             st.info("Todos os devedores já foram pagos ou não há devedores para agendar cobranças.")
         else:
-            # Adicionar campo de texto para filtrar devedores
-            filtro_nome_devedor = st.text_input(
-                "Digite o nome do devedor para filtrar:",
-                key="filtro_nome_devedor_agendamento"
-            )
+            # Inicializa o estado da sessão para o devedor selecionado e o filtro
+            if 'devedor_id_agendamento_selecionado' not in st.session_state:
+                st.session_state.devedor_id_agendamento_selecionado = None
+            if 'filtro_nome_devedor_agendamento_val' not in st.session_state: # Para controlar o valor do text_input
+                st.session_state.filtro_nome_devedor_agendamento_val = ""
 
-            devedores_filtrados = devedores_para_agendar
+            # Campo de texto para filtrar devedores
+            # Usamos um valor do session_state para poder limpá-lo programaticamente se necessário
+            # No entanto, Streamlit não tem uma forma direta de resetar o widget text_input para "" via código
+            # a não ser mudando sua chave, o que pode ter outros efeitos.
+            # O usuário geralmente apaga o texto para uma nova busca.
+            filtro_nome_devedor = st.text_input(
+                "Digite o nome do devedor para buscar:",
+                value=st.session_state.filtro_nome_devedor_agendamento_val, # Usar valor do estado se precisar controlar
+                key="filtro_nome_devedor_agendamento_input" # Chave única
+            )
+            # Atualiza o valor no session_state para persistir entre execuções, se necessário
+            st.session_state.filtro_nome_devedor_agendamento_val = filtro_nome_devedor
+
+            devedores_filtrados_df = pd.DataFrame() # Inicializa como DataFrame vazio
+
             if filtro_nome_devedor:
-                # Filtra o DataFrame com base no nome (case-insensitive)
-                devedores_filtrados = devedores_para_agendar[
+                devedores_filtrados_df = devedores_para_agendar[
                     devedores_para_agendar['nome'].str.contains(filtro_nome_devedor, case=False, na=False)
                 ]
 
-            if devedores_filtrados.empty and filtro_nome_devedor:
-                st.warning(f"Nenhum devedor encontrado com o nome '{filtro_nome_devedor}'.")
-                selected_devedor_info = "Selecione um devedor" # Reseta a seleção
-            elif devedores_filtrados.empty and not filtro_nome_devedor:
-                 # Isso não deveria acontecer se devedores_para_agendar não estiver vazio
-                 # Mas é uma checagem de segurança
-                st.info("Não há devedores disponíveis para agendamento.")
-                selected_devedor_info = "Selecione um devedor"
-            else:
-                devedor_options = {
-                    f"{row['nome']} (ID: {row['id']}) - Dívida: R$ {row['valortotal']:.2f}": int(row['id'])
-                    for _, row in devedores_filtrados.iterrows()
-                }
-                selected_devedor_info = st.selectbox(
-                    "Selecione o Devedor para Agendar/Reagendar Cobrança",
-                    options=["Selecione um devedor"] + list(devedor_options.keys()),
-                    key="select_devedor_agendamento_calendario"
-                )
-
-            if selected_devedor_info != "Selecione um devedor":
-                # Certifique-se que devedor_options está definido mesmo que a seleção venha de um estado anterior
-                # Se devedores_filtrados estava vazio, devedor_options não seria populado.
-                # Reconstruir devedor_options aqui se necessário ou garantir que a lógica acima lide com isso.
-                # No entanto, a lógica atual deve pegar o ID do devedor_options construído a partir de devedores_filtrados.
-                
-                devedor_id_selecionado = devedor_options[selected_devedor_info] # Esta linha pode dar erro se devedor_options não estiver atualizado
-                
-                # Para garantir que 'current_devedor' seja encontrado no df_agendados original (ou df_cobrancas_completo)
-                # pois devedor_options foi gerado a partir de devedores_filtrados
-                devedor_encontrado_df = df_agendados[df_agendados['id'] == devedor_id_selecionado]
-                if not devedor_encontrado_df.empty:
-                    current_devedor = devedor_encontrado_df.iloc[0]
-                else:
-                    # Se não encontrado em df_agendados, tente em df_cobrancas_completo (caso de PENDENTE que pode não estar em df_agendados)
-                    devedor_encontrado_df_completo = df_cobrancas_completo[df_cobrancas_completo['id'] == devedor_id_selecionado]
-                    if not devedor_encontrado_df_completo.empty:
-                         current_devedor = devedor_encontrado_df_completo.iloc[0]
-                    else:
-                        st.error("Devedor selecionado não encontrado nos dados. Por favor, recarregue.")
-                        st.stop()
-
-
-                st.write(f"Devedor selecionado: **{current_devedor['nome']}** (Status: **{current_devedor['status']}**)")
-                
-                default_date_val = current_devedor['data_cobranca'].date() if pd.notna(current_devedor['data_cobranca']) else date.today()
-
-                data_programada = st.date_input(
-                    "Data para Programar a Cobrança",
-                    value=default_date_val,
-                    min_value=date.today(),
-                    key=f"data_cobranca_input_calendario_{devedor_id_selecionado}"
-                )
-
-                if st.button("Agendar Cobrança", key=f"agendar_cobranca_btn_calendario_{devedor_id_selecionado}"):
-                    if isinstance(data_programada, datetime):
-                        data_programada = data_programada.date()
+                if not devedores_filtrados_df.empty:
+                    MAX_DEVEDORES_EXIBIDOS_BOTAO = 7 
                     
-                    success, message = marcar_cobranca_feita_e_reagendar_in_db(
-                        st.session_state.db_engine, 
-                        devedor_id_selecionado,
-                        data_programada # A função marcar_cobranca_feita_e_reagendar_in_db precisa ser ajustada para aceitar uma nova data
-                                         # ou você precisará de uma função específica para apenas reagendar/agendar.
-                                         # Assumindo que sua função pode lidar com isso ou você criará uma nova.
-                                         # Se a intenção é apenas *agendar* uma cobrança *pendente* ou *reagendar* uma *agendada*,
-                                         # a função `marcar_cobranca_feita_e_reagendar_in_db` pode não ser a ideal,
-                                         # pois ela também avança a fase.
-                                         # Você pode precisar de uma função como `agendar_ou_reagendar_cobranca_db(engine, devedor_id, nova_data)`
+                    devedores_para_exibir = devedores_filtrados_df
+                    if len(devedores_filtrados_df) > MAX_DEVEDORES_EXIBIDOS_BOTAO:
+                        st.info(f"Encontrados {len(devedores_filtrados_df)} devedores. Mostrando os primeiros {MAX_DEVEDORES_EXIBIDOS_BOTAO}. Refine sua busca para ver outros.")
+                        devedores_para_exibir = devedores_filtrados_df.head(MAX_DEVEDORES_EXIBIDOS_BOTAO)
+                    
+                    st.write("Devedores encontrados (clique para selecionar):")
+                    cols = st.columns(3) 
+                    col_idx = 0
+                    for _, row in devedores_para_exibir.iterrows():
+                        devedor_label = f"{row['nome']} (ID: {row['id']})" 
+      
+                        with cols[col_idx % len(cols)]:
+                            if st.button(devedor_label, key=f"btn_sel_dev_ag_{row['id']}", use_container_width=True):
+                                st.session_state.devedor_id_agendamento_selecionado = int(row['id'])
+                                
+                                st.rerun()
+                        col_idx += 1
+
+                elif len(filtro_nome_devedor) > 0:
+                    st.warning(f"Nenhum devedor encontrado com o nome '{filtro_nome_devedor}'.")
+                    st.session_state.devedor_id_agendamento_selecionado = None 
+            
+           
+            if not filtro_nome_devedor and st.session_state.devedor_id_agendamento_selecionado is not None:
+                 st.session_state.devedor_id_agendamento_selecionado = None
+                 st.rerun()
+
+
+            if not filtro_nome_devedor and st.session_state.devedor_id_agendamento_selecionado is None:
+                st.caption("Digite parte do nome do devedor para iniciar a busca.")
+
+            if st.session_state.get('devedor_id_agendamento_selecionado') is not None:
+                devedor_id_selecionado_para_agendar = st.session_state.devedor_id_agendamento_selecionado
+                
+                current_devedor_data = df_cobrancas_completo[df_cobrancas_completo['id'] == devedor_id_selecionado_para_agendar]
+
+                if not current_devedor_data.empty:
+                    current_devedor = current_devedor_data.iloc[0]
+                    
+                    st.markdown("---")
+                    st.subheader(f"Agendar para: {current_devedor['nome']}")
+                    st.write(f"ID: {current_devedor['id']} | Status Atual: **{current_devedor['status']}** | Dívida: R$ {current_devedor['valortotal']:.2f}")
+                    
+                    data_cobranca_atual_val = current_devedor['data_cobranca']
+                    default_date_val = data_cobranca_atual_val.date() if pd.notna(data_cobranca_atual_val) else date.today()
+
+                    nova_data_programada = st.date_input(
+                        "Nova Data para Programar a Cobrança",
+                        value=default_date_val,
+                        min_value=date.today(),
+                        key=f"nova_data_cobranca_cal_{devedor_id_selecionado_para_agendar}"
                     )
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.should_reload_df_cobrancas = True
+
+                    if st.button("🗓️ Confirmar Agendamento", key=f"confirmar_agendamento_btn_cal_{devedor_id_selecionado_para_agendar}", type="primary"):
+                        if isinstance(nova_data_programada, datetime):
+                            nova_data_programada = nova_data_programada.date()
+                        
+                    
+                        success, message = marcar_cobranca_feita_e_reagendar_in_db(
+                            st.session_state.db_engine, 
+                            devedor_id_selecionado_para_agendar,
+                            nova_data_programada
+                        )
+                        if success:
+                            st.success(f"Cobrança para {current_devedor['nome']} (re)agendada: {message}")
+                            st.session_state.devedor_id_agendamento_selecionado = None 
+                            st.session_state.filtro_nome_devedor_agendamento_val = "" 
+                        else:
+                            st.error(f"Erro ao (re)agendar para {current_devedor['nome']}: {message}")
+                        
+                        st.session_state.should_reload_df_cobrancas = True
+                        st.rerun()
+                    
+                    if st.button("Cancelar Seleção", key=f"cancelar_sel_dev_ag_{devedor_id_selecionado_para_agendar}"):
+                        st.session_state.devedor_id_agendamento_selecionado = None
+                        st.rerun()
+
+                else:
+                    st.error("Devedor selecionado não encontrado nos dados. Por favor, tente novamente.")
+                    st.session_state.devedor_id_agendamento_selecionado = None
                     st.rerun()
-            # Adicionado para o caso de nenhum devedor ser selecionado após a filtragem
-            elif filtro_nome_devedor and devedores_filtrados.empty:
-                pass # A mensagem de warning já foi exibida
-            elif not devedores_para_agendar.empty and devedores_filtrados.empty and not filtro_nome_devedor:
-                 # Caso em que há devedores para agendar, mas o filtro inicial (vazio) não os mostra
-                 # Isso não deveria acontecer com a lógica atual, mas como segurança.
-                 pass
+      
 
     st.subheader("📅 Visualização em Calendário")
     cols_calendario_select = st.columns(2)
@@ -310,15 +394,8 @@ def exibir_calendario_cobrancas_tab():
         st.warning("DataFrame 'df_agendados' não encontrado ou coluna 'data_cobranca_display' ausente.")
         df_month_events = pd.DataFrame()
 
-    # The HTML for clicking on days is removed since the new style sheet
-    # will not support interactive elements directly injected into HTML
-    # by st.markdown in the same way st.components.v1.html does.
-    # The logic for `st.session_state.selected_date` will be handled
-    # by a date_input or similar if interactive selection is needed.
-
     for day, count in events_by_day.items():
         event_text = f"<br><span class='event-count'>{count} cobrança(s)</span>"
-        # Find the exact day number to replace it with interactive content
         month_html = month_html.replace(
             f'>{day}</td>',
             f'>{day}{event_text}</td>', 1 
