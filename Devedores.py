@@ -453,57 +453,12 @@ def show_lista_devedores_tab(filters):
             hide_index=True # Oculta o índice padrão do Pandas.
         )
 
-        # Seção de Ações por Devedor (cards individuais).
-        st.markdown("---")
-        st.subheader("Ações por Devedor")
-        for idx, row in display_df.iterrows():
-            if 'id' not in row or pd.isna(row['id']):
-                st.warning(f"Erro: Devedor '{row['nome']}' não possui um ID válido para ações. Pule este registro.")
-                continue
-
-            with st.container(border=True): # Cada devedor é exibido em um card com borda.
-                cols = st.columns([4, 1]) # Duas colunas para nome/detalhes e botões de ação.
-
-                with cols[0]:
-                    st.markdown(f"### {row['nome']}")
-                    st.caption(f"ID Pessoa: {row.get('pessoa', 'N/A') if pd.notna(row.get('pessoa')) else 'N/A'} | 📞 {row.get('telefone', 'N/A') if pd.notna(row.get('telefone')) else 'N/A'} | Status: **{row['status']}**")
-                    st.write(f"**Valor:** R$ {row['valortotal']:,.2f} | **Atraso:** {row['atraso']} dias")
-
-                    # Formata a data de pagamento para exibição.
-                    data_pagamento_str = row['data_pagamento'].strftime('%d/%m/%Y') if pd.notna(row['data_pagamento']) else 'Não pago'
-                    st.markdown(f"**Data Pagamento:** {data_pagamento_str}")
-
-                with cols[1]:
-                    # Botão para marcar como pago.
-                    if st.button("✅ Marcar como Pago", key=f"pago_btn_{row['id']}_main",
-                                 disabled=(row['status'] == StatusDevedor.PAGO.value), # Desabilita se já estiver pago.
-                                 use_container_width=True):
-                        success, message = marcar_como_pago_in_db(st.session_state.db_engine, row['id'])
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
-                        st.session_state.should_reload_df = True # Marca para recarregar o DF.
-                        st.rerun()
-
-                    # Botão para remover o devedor.
-                    if st.button("❌ Remover", key=f"remover_btn_{row['id']}_main", use_container_width=True):
-                        success, message = remover_devedor_from_db(st.session_state.db_engine, row['id'])
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
-                        st.session_state.should_reload_df = True # Marca para recarregar o DF.
-                        st.rerun()
+        
     else:
         st.warning("Nenhum registro encontrado com os filtros aplicados.")
 
-    render_data_controls() # Renderiza os controles de dados após a tabela.
+    render_data_controls() 
 
-# --- Ponto de Entrada Principal do Script ---
-# Esta parte é executada quando o script é iniciado.
 if __name__ == "__main__":
-    # Carrega e exibe o conteúdo da barra lateral, obtendo os filtros.
     filters_from_sidebar = sidebar_content()
-    # Exibe a tab da lista de devedores, aplicando os filtros.
     show_lista_devedores_tab(filters_from_sidebar)

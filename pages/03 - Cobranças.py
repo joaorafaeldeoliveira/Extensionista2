@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import calendar
 import numpy as np
-#toptotpotpt
+
 st.set_page_config(
     page_title="Sistema de Cobranças - Agendamento",
     page_icon="📈",
