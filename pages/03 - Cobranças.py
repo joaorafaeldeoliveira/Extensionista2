@@ -180,19 +180,60 @@ def exibir_calendario_cobrancas_tab():
         if devedores_para_agendar.empty:
             st.info("Todos os devedores já foram pagos ou não há devedores para agendar cobranças.")
         else:
-            devedor_options = {
-                f"{row['nome']} (ID: {row['id']}) - Dívida: R$ {row['valortotal']:.2f}": int(row['id'])
-                for _, row in devedores_para_agendar.iterrows()
-            }
-            selected_devedor_info = st.selectbox(
-                "Selecione o Devedor para Agendar/Reagendar Cobrança",
-                options=["Selecione um devedor"] + list(devedor_options.keys()),
-                key="select_devedor_agendamento_calendario"
+            # Adicionar campo de texto para filtrar devedores
+            filtro_nome_devedor = st.text_input(
+                "Digite o nome do devedor para filtrar:",
+                key="filtro_nome_devedor_agendamento"
             )
 
+            devedores_filtrados = devedores_para_agendar
+            if filtro_nome_devedor:
+                # Filtra o DataFrame com base no nome (case-insensitive)
+                devedores_filtrados = devedores_para_agendar[
+                    devedores_para_agendar['nome'].str.contains(filtro_nome_devedor, case=False, na=False)
+                ]
+
+            if devedores_filtrados.empty and filtro_nome_devedor:
+                st.warning(f"Nenhum devedor encontrado com o nome '{filtro_nome_devedor}'.")
+                selected_devedor_info = "Selecione um devedor" # Reseta a seleção
+            elif devedores_filtrados.empty and not filtro_nome_devedor:
+                 # Isso não deveria acontecer se devedores_para_agendar não estiver vazio
+                 # Mas é uma checagem de segurança
+                st.info("Não há devedores disponíveis para agendamento.")
+                selected_devedor_info = "Selecione um devedor"
+            else:
+                devedor_options = {
+                    f"{row['nome']} (ID: {row['id']}) - Dívida: R$ {row['valortotal']:.2f}": int(row['id'])
+                    for _, row in devedores_filtrados.iterrows()
+                }
+                selected_devedor_info = st.selectbox(
+                    "Selecione o Devedor para Agendar/Reagendar Cobrança",
+                    options=["Selecione um devedor"] + list(devedor_options.keys()),
+                    key="select_devedor_agendamento_calendario"
+                )
+
             if selected_devedor_info != "Selecione um devedor":
-                devedor_id_selecionado = devedor_options[selected_devedor_info]
-                current_devedor = df_agendados[df_agendados['id'] == devedor_id_selecionado].iloc[0]
+                # Certifique-se que devedor_options está definido mesmo que a seleção venha de um estado anterior
+                # Se devedores_filtrados estava vazio, devedor_options não seria populado.
+                # Reconstruir devedor_options aqui se necessário ou garantir que a lógica acima lide com isso.
+                # No entanto, a lógica atual deve pegar o ID do devedor_options construído a partir de devedores_filtrados.
+                
+                devedor_id_selecionado = devedor_options[selected_devedor_info] # Esta linha pode dar erro se devedor_options não estiver atualizado
+                
+                # Para garantir que 'current_devedor' seja encontrado no df_agendados original (ou df_cobrancas_completo)
+                # pois devedor_options foi gerado a partir de devedores_filtrados
+                devedor_encontrado_df = df_agendados[df_agendados['id'] == devedor_id_selecionado]
+                if not devedor_encontrado_df.empty:
+                    current_devedor = devedor_encontrado_df.iloc[0]
+                else:
+                    # Se não encontrado em df_agendados, tente em df_cobrancas_completo (caso de PENDENTE que pode não estar em df_agendados)
+                    devedor_encontrado_df_completo = df_cobrancas_completo[df_cobrancas_completo['id'] == devedor_id_selecionado]
+                    if not devedor_encontrado_df_completo.empty:
+                         current_devedor = devedor_encontrado_df_completo.iloc[0]
+                    else:
+                        st.error("Devedor selecionado não encontrado nos dados. Por favor, recarregue.")
+                        st.stop()
+
 
                 st.write(f"Devedor selecionado: **{current_devedor['nome']}** (Status: **{current_devedor['status']}**)")
                 
@@ -212,7 +253,13 @@ def exibir_calendario_cobrancas_tab():
                     success, message = marcar_cobranca_feita_e_reagendar_in_db(
                         st.session_state.db_engine, 
                         devedor_id_selecionado,
-                        data_programada
+                        data_programada # A função marcar_cobranca_feita_e_reagendar_in_db precisa ser ajustada para aceitar uma nova data
+                                         # ou você precisará de uma função específica para apenas reagendar/agendar.
+                                         # Assumindo que sua função pode lidar com isso ou você criará uma nova.
+                                         # Se a intenção é apenas *agendar* uma cobrança *pendente* ou *reagendar* uma *agendada*,
+                                         # a função `marcar_cobranca_feita_e_reagendar_in_db` pode não ser a ideal,
+                                         # pois ela também avança a fase.
+                                         # Você pode precisar de uma função como `agendar_ou_reagendar_cobranca_db(engine, devedor_id, nova_data)`
                     )
                     if success:
                         st.success(message)
@@ -220,6 +267,13 @@ def exibir_calendario_cobrancas_tab():
                         st.error(message)
                     st.session_state.should_reload_df_cobrancas = True
                     st.rerun()
+            # Adicionado para o caso de nenhum devedor ser selecionado após a filtragem
+            elif filtro_nome_devedor and devedores_filtrados.empty:
+                pass # A mensagem de warning já foi exibida
+            elif not devedores_para_agendar.empty and devedores_filtrados.empty and not filtro_nome_devedor:
+                 # Caso em que há devedores para agendar, mas o filtro inicial (vazio) não os mostra
+                 # Isso não deveria acontecer com a lógica atual, mas como segurança.
+                 pass
 
     st.subheader("📅 Visualização em Calendário")
     cols_calendario_select = st.columns(2)
