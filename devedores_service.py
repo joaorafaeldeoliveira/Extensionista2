@@ -72,12 +72,9 @@ def load_devedores_from_db(db_engine) -> pd.DataFrame:
 # ### ALTERADO: Funções simplificadas com o decorador ###
 @session_handler
 def add_devedor_to_db(session, nome: str, valortotal: float, atraso: int, telefone: str = None, pessoa_id: str = None) -> Tuple[bool, str]:
-    """Adiciona um novo devedor ao banco de dados."""
-    if pessoa_id:
-        # A verificação de existência ainda é útil para fornecer uma mensagem de erro clara
-        existing = session.query(Devedor).filter_by(pessoa=pessoa_id).first()
-        if existing:
-            return False, f"Erro: Já existe um devedor com o ID Pessoa '{pessoa_id}'."
+
+    if not nome:
+        return False, "Erro: O campo 'Nome' é obrigatório e não pode ser vazio."
     
     novo_devedor = Devedor(
         pessoa=pessoa_id,
@@ -85,7 +82,7 @@ def add_devedor_to_db(session, nome: str, valortotal: float, atraso: int, telefo
         valortotal=valortotal,
         atraso=atraso,
         telefone=telefone,
-        status=StatusDevedor.EM_ABERTO # Usando um status mais genérico como padrão
+        status=StatusDevedor.PENDENTE # Usando um status mais genérico como padrão
     )
     session.add(novo_devedor)
     # o commit é feito pelo decorador
@@ -143,14 +140,15 @@ def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
 
     session = get_session(db_engine)
     try:
-        # 1. Busca todos os IDs existentes de uma só vez
-        existing_pessoas_query = session.query(Devedor.pessoa).all()
+
+        existing_pessoas_query = session.query(Devedor.nome).all()
         existing_pessoas = {p[0] for p in existing_pessoas_query}
 
         # 2. Identifica duplicatas usando Pandas
         df_excel['is_duplicate'] = df_excel['pessoa'].isin(existing_pessoas)
-        
         df_to_add = df_excel[~df_excel['is_duplicate']].copy()
+        df_excel['pessoa'] = df_excel['pessoa'].astype(str).str.strip().str.upper()
+        existing_pessoas = {str(p[0]).strip().upper() for p in existing_pessoas_query}
         count_skipped = len(df_excel) - len(df_to_add)
 
         if df_to_add.empty:
