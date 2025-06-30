@@ -2,234 +2,227 @@
 import pandas as pd
 import io
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from datetime import datetime, date, timedelta
+from functools import wraps
+from typing import Tuple, Any, Dict, List
+
+# Importações do seu projeto
 from database import get_session, Devedor, StatusDevedor
-# Função para carregar todos os devedores do banco de dados para um DataFrame
-def load_devedores_from_db(db_engine):
-    session = get_session(db_engine)
+
+# ### NOVO: Decorador para Gerenciamento de Sessão ###
+# Este decorador simplifica todas as funções que acessam o banco de dados.
+# Ele cuida de:
+# 1. Abrir a sessão.
+# 2. Passar a sessão para a função.
+# 3. Fazer o commit em caso de sucesso.
+# 4. Fazer o rollback em caso de erro.
+# 5. Fechar a sessão, não importa o que aconteça.
+def session_handler(func):
+    """Um decorador que gerencia o ciclo de vida da sessão do SQLAlchemy."""
+    @wraps(func)
+    def wrapper(db_engine, *args, **kwargs):
+        session = get_session(db_engine)
+        try:
+            # Passa a sessão como o primeiro argumento para a função original
+            result = func(session, *args, **kwargs)
+            session.commit()
+            return result
+        except IntegrityError as e:
+            session.rollback()
+            # Retorna um erro específico para violações de chave única (ID duplicado)
+            return False, f"Erro de Integridade: Um registro com dados únicos já existe. Detalhe: {e.orig}"
+        except Exception as e:
+            session.rollback()
+            # Retorna um erro genérico para outras exceções
+            return False, f"Ocorreu um erro inesperado na operação: {e}"
+        finally:
+            session.close()
+    return wrapper
+
+# ### ALTERADO: Função de carregamento otimizada ###
+# Usa pd.read_sql para carregar os dados diretamente em um DataFrame,
+# o que é significativamente mais rápido do que iterar sobre os resultados.
+def load_devedores_from_db(db_engine) -> pd.DataFrame:
+    """Carrega todos os devedores do banco de dados de forma eficiente."""
     try:
-        devedores = session.query(Devedor).all()
-        data = []
-        for d in devedores:
-            data.append({
-                'id': d.id,
-                'pessoa': d.pessoa,
-                'nome': d.nome,
-                'valortotal': d.valortotal,
-                'atraso': d.atraso,
-                'telefone': d.telefone,
-                'data_cobranca': d.data_cobranca, # MANTIDO
-                'ultima_cobranca': d.ultima_cobranca, # MANTIDO
-                'status': d.status.value if isinstance(d.status, StatusDevedor) else d.status,
-                'data_pagamento': d.data_pagamento
-            })
+        with db_engine.connect() as connection:
+            # A query busca todas as colunas da tabela Devedor
+            query = select(Devedor)
+            df = pd.read_sql(query, connection)
         
-        df = pd.DataFrame(data)
-        
+        # Converte as colunas de data/hora para o tipo correto, tratando erros
         for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento']:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce') 
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Converte o valor do enum para string, se necessário
+        if 'status' in df.columns:
+             df['status'] = df['status'].apply(lambda s: s.value if isinstance(s, StatusDevedor) else s)
+                
         return df
     except Exception as e:
         print(f"Erro ao carregar devedores do banco de dados: {e}")
+        # Retorna um DataFrame vazio com as colunas esperadas em caso de falha
         return pd.DataFrame(columns=[
             'id', 'pessoa', 'nome', 'valortotal', 'atraso', 'telefone',
             'data_cobranca', 'ultima_cobranca', 'status', 'data_pagamento'
         ])
-    finally:
-        session.close()
 
-# Função para adicionar um novo devedor ao banco de dados
-def add_devedor_to_db(db_engine, nome, valortotal, atraso, telefone=None, pessoa_id=None):
-    session = get_session(db_engine)
-    try:
-        if pessoa_id:
-            existing_devedor = session.query(Devedor).filter_by(pessoa=pessoa_id).first()
-            if existing_devedor:
-                return False, f"Erro: Já existe um devedor com o ID Pessoa '{pessoa_id}'. Por favor, use um ID único."
-        
-        novo_devedor = Devedor(
-            pessoa=pessoa_id if pessoa_id else None,
-            nome=nome,
-            valortotal=valortotal,
-            atraso=atraso,
-            telefone=telefone,
-            status=StatusDevedor.PENDENTE, # Sempre começa como PENDENTE
-            data_cobranca=None, # Inicia nulo, será preenchido na tela de Cobranças
-            ultima_cobranca=None, # Inicia nulo, será preenchido na tela de Cobranças
-            data_pagamento=None # Inicia nulo, será preenchido na tela de Cobranças
-        )
-        session.add(novo_devedor)
-        session.commit()
-        return True, f"Devedor '{nome}' adicionado com sucesso! ID: {novo_devedor.id}"
-    except IntegrityError: # Captura erro de unicidade do DB se a validação inicial falhar por concorrência
-        session.rollback()
-        return False, f"Erro: Um devedor com o ID Pessoa '{pessoa_id}' já existe."
-    except Exception as e:
-        session.rollback()
-        return False, f"Erro ao adicionar devedor: {e}"
-    finally:
-        session.close()
+# ### ALTERADO: Funções simplificadas com o decorador ###
+@session_handler
+def add_devedor_to_db(session, nome: str, valortotal: float, atraso: int, telefone: str = None, pessoa_id: str = None) -> Tuple[bool, str]:
+    """Adiciona um novo devedor ao banco de dados."""
+    if pessoa_id:
+        # A verificação de existência ainda é útil para fornecer uma mensagem de erro clara
+        existing = session.query(Devedor).filter_by(pessoa=pessoa_id).first()
+        if existing:
+            return False, f"Erro: Já existe um devedor com o ID Pessoa '{pessoa_id}'."
+    
+    novo_devedor = Devedor(
+        pessoa=pessoa_id,
+        nome=nome,
+        valortotal=valortotal,
+        atraso=atraso,
+        telefone=telefone,
+        status=StatusDevedor.EM_ABERTO # Usando um status mais genérico como padrão
+    )
+    session.add(novo_devedor)
+    # o commit é feito pelo decorador
+    return True, f"Devedor '{nome}' adicionado com sucesso!"
 
-# Função para marcar como pago no banco de dados (Esta função será usada na página Cobrancas.py, mas manteremos aqui)
-def marcar_como_pago_in_db(db_engine, devedor_id):
-    session = get_session(db_engine)
-    try:
-        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-        if devedor:
-            devedor.status = StatusDevedor.PAGO
-            devedor.data_pagamento = date.today()
-            session.commit()
-            return True, "Devedor marcado como pago!"
+# ### NOVO: Função para atualizar devedor (para a edição na tabela) ###
+@session_handler
+def update_devedor_in_db(session, devedor_id: int, updates: Dict[str, Any]) -> Tuple[bool, str]:
+    """Atualiza um devedor existente com base em um dicionário de mudanças."""
+    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+    if not devedor:
+        return False, "Devedor não encontrado para atualização."
+
+    for key, value in updates.items():
+        # Converte o valor do enum de volta para o objeto Enum antes de salvar
+        if key == 'status' and isinstance(value, str):
+            try:
+                # Transforma a string 'Em aberto' no objeto StatusDevedor.EM_ABERTO
+                enum_value = StatusDevedor(value)
+                setattr(devedor, key, enum_value)
+            except ValueError:
+                return False, f"Status '{value}' inválido."
         else:
-            return False, "Devedor não encontrado."
-    except Exception as e:
-        session.rollback()
-        return False, f"Erro ao marcar como pago: {e}"
-    finally:
-        session.close()
+            setattr(devedor, key, value)
+            
+    return True, f"Devedor ID {devedor_id} atualizado com sucesso."
 
-# Função para remover devedor do banco de dados
-def remover_devedor_from_db(db_engine, devedor_id):
-    session = get_session(db_engine)
-    try:
-        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-        if devedor:
-            session.delete(devedor)
-            session.commit()
-            return True, "Devedor removido com sucesso!"
-        else:
-            return False, "Devedor não encontrado."
-    except Exception as e:
-        session.rollback()
-        return False, f"Erro ao remover devedor: {e}"
-    finally:
-        session.close()
+@session_handler
+def remover_devedor_from_db(session, devedor_id: int) -> Tuple[bool, str]:
+    """Remove um devedor do banco de dados."""
+    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+    if devedor:
+        session.delete(devedor)
+        return True, "Devedor removido com sucesso!"
+    else:
+        return False, "Devedor não encontrado para remoção."
 
-# Função para importar dados de um arquivo Excel para o banco de dados
-def import_excel_to_db(db_engine, file):
+def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
+
     try:
         df_excel = pd.read_excel(file, engine='openpyxl')
-        
-        required_cols_excel = ['nome', 'valortotal', 'atraso', 'pessoa'] 
-        
-        if not all(col in df_excel.columns for col in required_cols_excel):
-            return False, f"O arquivo Excel não contém todas as colunas obrigatórias para importação: {', '.join(required_cols_excel)}. Colunas encontradas: {list(df_excel.columns)}"
-
-        session = get_session(db_engine)
-        count_added = 0
-        count_skipped = 0
-        skipped_messages = [] 
-        
-        try:
-            for index, row in df_excel.iterrows():
-                pessoa_value = str(row['pessoa']) if 'pessoa' in row and pd.notna(row['pessoa']) else None
-                
-                if pessoa_value is None:
-                    skipped_messages.append(f"Devedor '{row.get('nome', 'N/A')}' pulado: ID Pessoa não fornecido no Excel.")
-                    count_skipped += 1
-                    continue
-
-                existing_devedor = session.query(Devedor).filter_by(pessoa=pessoa_value).first()
-                if existing_devedor:
-                    skipped_messages.append(f"Devedor '{row.get('nome', 'N/A')}' (ID Pessoa: {pessoa_value}) já existe. Pulado.")
-                    count_skipped += 1
-                    continue
-
-                telefone_final = None
-                if 'celular1' in row and pd.notna(row['celular1']):
-                    telefone_final = str(row['celular1'])
-                elif 'telefone' in row and pd.notna(row['telefone']):
-                    telefone_final = str(row['telefone'])
-
-                novo_devedor_excel = Devedor(
-                    pessoa=pessoa_value,
-                    nome=row.get('nome', 'N/A'),
-                    valortotal=row.get('valortotal', 0.0),
-                    atraso=row.get('atraso', 0),
-                    telefone=telefone_final,
-                    status=StatusDevedor.PENDENTE, # Novos devedores importados começam como Pendente
-                    data_cobranca=None, # Não preenchido na importação, responsabilidade da tela de Cobranças
-                    ultima_cobranca=None, # Não preenchido na importação, responsabilidade da tela de Cobranças
-                    data_pagamento=None # Não preenchido na importação, responsabilidade da tela de Cobranças
-                )
-                session.add(novo_devedor_excel)
-                count_added += 1
-            session.commit()
-            
-            final_message = f"Importação concluída. Adicionados: {count_added} devedores. Pulados (já existentes ou sem ID Pessoa): {count_skipped}."
-            if skipped_messages:
-                final_message += "\n\nDetalhes dos devedores pulados (opcional):"
-                for i, msg in enumerate(skipped_messages):
-                    if i < 5: 
-                        final_message += f"\n- {msg}"
-                    else:
-                        final_message += f"\n- E mais {len(skipped_messages) - 5} devedores..."
-                        break
-
-            return True, final_message
-        except IntegrityError as e:
-            session.rollback()
-            return False, f"Erro de unicidade ao importar: Um devedor com o ID Pessoa já existe. Detalhes: {e}"
-        except Exception as e:
-            session.rollback()
-            return False, f"Erro ao importar dados do Excel para o banco de dados: {e}"
-        finally:
-            session.close()
     except Exception as e:
-        return False, f"Erro ao ler o arquivo Excel para importação: {e}"
+        return False, f"Erro ao ler o arquivo Excel: {e}"
 
-# Função para exportar dados para um arquivo Excel
-def export_devedores_to_excel(df_to_export):
+    required_cols = ['pessoa', 'nome', 'valortotal', 'atraso']
+    if not all(col in df_excel.columns for col in required_cols):
+        return False, f"O arquivo Excel deve conter as colunas: {', '.join(required_cols)}."
+
+    # Limpeza dos dados
+    df_excel['pessoa'] = df_excel['pessoa'].astype(str).str.strip()
+    df_excel.dropna(subset=['pessoa'], inplace=True) # Remove linhas sem 'pessoa'
+    df_excel = df_excel[df_excel['pessoa'] != '']
+    if df_excel.empty:
+        return False, "Nenhum devedor com ID Pessoa válido encontrado no arquivo."
+
+    session = get_session(db_engine)
+    try:
+        # 1. Busca todos os IDs existentes de uma só vez
+        existing_pessoas_query = session.query(Devedor.pessoa).all()
+        existing_pessoas = {p[0] for p in existing_pessoas_query}
+
+        # 2. Identifica duplicatas usando Pandas
+        df_excel['is_duplicate'] = df_excel['pessoa'].isin(existing_pessoas)
+        
+        df_to_add = df_excel[~df_excel['is_duplicate']].copy()
+        count_skipped = len(df_excel) - len(df_to_add)
+
+        if df_to_add.empty:
+            return True, f"Importação concluída. Nenhum devedor novo para adicionar. {count_skipped} devedores já existentes foram pulados."
+
+        # Prepara os dados para inserção em massa
+        df_to_add['status'] = StatusDevedor.EM_ABERTO
+        df_to_add['telefone'] = df_to_add.apply(
+            lambda row: str(row['celular1']) if 'celular1' in row and pd.notna(row['celular1']) else str(row.get('telefone')),
+            axis=1
+        )
+        
+        # Seleciona apenas as colunas que correspondem ao modelo Devedor
+        model_cols = [c.key for c in Devedor.__table__.columns if c.key not in ['id']]
+        records_to_insert = df_to_add[model_cols].to_dict('records')
+        
+        # 3. Insere todos os registros de uma vez
+        session.bulk_insert_mappings(Devedor, records_to_insert)
+        session.commit()
+        
+        return True, f"Importação concluída com sucesso! Adicionados: {len(records_to_insert)}. Pulados (já existentes): {count_skipped}."
+    
+    except Exception as e:
+        session.rollback()
+        return False, f"Erro durante a importação para o banco de dados: {e}"
+    finally:
+        session.close()
+
+def export_devedores_to_excel(df_to_export: pd.DataFrame) -> Tuple[io.BytesIO | None, str]:
+    """Exporta um DataFrame de devedores para um arquivo Excel em memória."""
     if df_to_export.empty:
         return None, "Nenhum dado para exportar."
 
     output = io.BytesIO()
-    df_for_excel = df_to_export.copy()
+    df_copy = df_to_export.copy()
 
-    # Converte colunas de data para string formatada para evitar problemas no Excel
-    # Manter todas as colunas de data que podem ser preenchidas por Cobrancas.py
+    # Formata as colunas de data/hora para string antes de exportar
     for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento']:
-        if col in df_for_excel.columns and pd.api.types.is_datetime64_any_dtype(df_for_excel[col]):
-            df_for_excel[col] = df_for_excel[col].dt.strftime('%Y-%m-%d')
-        else:
-            df_for_excel[col] = df_for_excel[col].astype(str) # Converte para string para não dar erro
+        if col in df_copy.columns and pd.api.types.is_datetime64_any_dtype(df_copy[col]):
+            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S').replace('NaT', '')
 
     try:
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_for_excel.to_excel(writer, index=False, sheet_name='Devedores')
+        with pd.ExcelWriter(output, engine='xlsxwriter', datetime_format='yyyy-mm-dd') as writer:
+            df_copy.to_excel(writer, index=False, sheet_name='Devedores')
         output.seek(0)
         return output.getvalue(), "Dados exportados com sucesso!"
     except Exception as e:
-        return None, f"Erro ao exportar dados para Excel: {e}"
+        return None, f"Erro ao gerar o arquivo Excel: {e}"
 
-# Nova função para agendar cobrança (será usada em Cobrancas.py)
-def marcar_cobranca_feita_e_reagendar_in_db(db_engine, devedor_id, data_programada=None):
-    session = get_session(db_engine)
-    try:
-        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-        if not devedor:
-            return False, "Devedor não encontrado"
-        
-        # Marca a última cobrança como hoje
-        devedor.ultima_cobranca = datetime.now().date()
-        
-        # Se foi passada uma data programada, usa ela
-        if data_programada:
-            devedor.data_cobranca = data_programada
-        else:
-            # Caso contrário, agenda para 10 dias depois (comportamento padrão)
-            devedor.data_cobranca = datetime.now().date() + timedelta(days=10)
-        
-        # Avança a fase se não for a última (fase 3)
-        if devedor.fase_cobranca < 3:
-            devedor.fase_cobranca += 1
-        
-        devedor.status = StatusDevedor.AGENDADO.value
-        session.commit()
-        return True, "Cobrança registrada e próxima agendada com sucesso"
-    except Exception as e:
-        session.rollback()
-        return False, f"Erro ao atualizar devedor: {str(e)}"
-    finally:
-        session.close()
+# As funções abaixo, relacionadas a cobranças, foram mantidas com o novo padrão de decorador
+@session_handler
+def marcar_como_pago_in_db(session, devedor_id: int) -> Tuple[bool, str]:
+    """Marca um devedor como pago."""
+    return update_devedor_in_db(
+        session, 
+        devedor_id, 
+        {'status': StatusDevedor.PAGO, 'data_pagamento': date.today()}
+    )
+
+@session_handler
+def marcar_cobranca_feita_e_reagendar_in_db(session, devedor_id: int, data_programada: date = None) -> Tuple[bool, str]:
+    """Registra uma cobrança e agenda a próxima."""
+    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+    if not devedor:
+        return False, "Devedor não encontrado"
+    
+    devedor.ultima_cobranca = date.today()
+    devedor.data_cobranca = data_programada if data_programada else date.today() + timedelta(days=10)
+    devedor.status = StatusDevedor.AGENDADO
+
+    # A lógica de 'fase_cobranca' é mantida se existir no seu modelo
+    if hasattr(devedor, 'fase_cobranca') and devedor.fase_cobranca < 3:
+        devedor.fase_cobranca += 1
+    
+    return True, "Cobrança registrada e próxima agendada com sucesso."

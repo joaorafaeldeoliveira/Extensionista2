@@ -6,11 +6,6 @@ import io
 from datetime import datetime, date
 
 # --- CONFIGURAÇÃO DA PÁGINA (DEVE SER A PRIMEIRA CHAMADA STREAMLIT NO SCRIPT) ---
-# Esta chamada configura a página do Streamlit.
-# Page_title: Título que aparece na aba do navegador.
-# Page_icon: Ícone que aparece na aba do navegador.
-# Layout: Define a largura da página ('wide' usa mais espaço, 'centered' é mais estreito).
-# initial_sidebar_state: Define se a barra lateral está expandida ou recolhida inicialmente.
 st.set_page_config(
     page_title="Sistema de Devedores",
     page_icon="📋",
@@ -28,7 +23,8 @@ from devedores_service import (
     marcar_como_pago_in_db,
     remover_devedor_from_db,
     import_excel_to_db,
-    export_devedores_to_excel
+    export_devedores_to_excel,
+    update_devedor_in_db  # ### NOVO ### - Função para atualizar um devedor
 )
 
 # --- Inicialização da Conexão com o Banco de Dados e Variáveis de Estado ---
@@ -46,6 +42,10 @@ if 'df' not in st.session_state:
 # DataFrame filtrado, usado para exibição após a aplicação dos filtros.
 if 'filtered_df' not in st.session_state:
     st.session_state.filtered_df = None
+    
+# ### NOVO ### - Armazena o estado do data_editor para detectar mudanças
+if 'edited_df_state' not in st.session_state:
+    st.session_state.edited_df_state = None
 
 # Controle de paginação: número da página atual.
 if 'page_number' not in st.session_state:
@@ -60,9 +60,11 @@ if 'valor_categorias_selecionadas_state' not in st.session_state:
     st.session_state.valor_categorias_selecionadas_state = ["Todos"]
 if 'status_atraso_selecionados_state' not in st.session_state:
     st.session_state.status_atraso_selecionadas_state = ["Todos"]
+if 'search_term_state' not in st.session_state: # ### NOVO ###
+    st.session_state.search_term_state = ""
+
 
 # Flag para indicar se o DataFrame principal precisa ser recarregado do banco de dados.
-# Isso é útil após operações de CRUD (adicionar, remover, importar, pagar).
 if 'should_reload_df' not in st.session_state:
     st.session_state.should_reload_df = True
 
@@ -71,394 +73,305 @@ if 'should_reload_df' not in st.session_state:
 # Função para renderizar o conteúdo da barra lateral (filtros e opções de importação/exportação).
 def sidebar_content():
     filters = {} # Dicionário para armazenar os valores dos filtros.
-    with st.sidebar: # Conteúdo dentro da barra lateral.
+    with st.sidebar:
         st.header("📂 Gerenciar Dados")
         st.write("Aqui você pode importar novos devedores ou exportar os dados existentes.")
 
         st.subheader("⬆️ Importar de Excel")
         uploaded_file = st.file_uploader(
-            "Selecione o arquivo Excel para importar (adicionar novos devedores)",
-            type=["xlsx", "xls"], # Tipos de arquivo permitidos.
-            key="file_uploader" # Chave única para o widget.
+            "Selecione o arquivo Excel para importar",
+            type=["xlsx", "xls"],
+            key="file_uploader"
         )
-
         if uploaded_file is not None:
             st.info("Processando importação...")
-            # Chama a função de serviço para importar os dados.
             success, message = import_excel_to_db(st.session_state.db_engine, uploaded_file)
             if success:
                 st.success(message)
-                st.session_state.should_reload_df = True # Marca para recarregar o DF.
-                st.rerun() # Reinicia o script para refletir as mudanças.
+                st.session_state.should_reload_df = True
+                st.rerun()
             else:
                 st.error(message)
 
         st.subheader("⬇️ Exportar Dados")
-        # Permite exportar todos os dados se o DataFrame principal não estiver vazio.
         if st.session_state.df is not None and not st.session_state.df.empty:
             excel_data, export_message = export_devedores_to_excel(st.session_state.df)
             if excel_data:
                 st.download_button(
                     label="Baixar Todos os Dados (Excel)",
                     data=excel_data,
-                    file_name="devedores.xlsx",
+                    file_name="devedores_completo.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_excel_full_db"
                 )
-            else:
-                st.info(export_message)
         else:
-            st.info("Nenhum dado no banco de dados para exportar ainda.")
+            st.info("Nenhum dado para exportar.")
 
         # --- Filtros Avançados ---
         st.header("🔍 Filtros Avançados")
 
-        # Define os valores min/max padrão para os filtros de valor e atraso.
-        # Se o DF estiver vazio, usa valores fixos. Caso contrário, usa os min/max dos dados existentes.
+        # ### ALTERADO ### - Filtro de busca unificado por nome ou ID.
+        filters['search_term'] = st.text_input(
+            "Buscar por Nome ou ID",
+            value=st.session_state.search_term_state,
+            placeholder="Digite o nome ou ID do devedor...",
+            help="Filtra devedores cujo nome ou ID contenha o texto digitado.",
+            key="search_term_input"
+        )
+        st.session_state.search_term_state = filters['search_term']
+
+
+        # Define os valores min/max padrão para os filtros.
         if st.session_state.df is None or st.session_state.df.empty:
-            filters['original_valor_min'] = 0.0
-            filters['original_valor_max'] = 10000.0
-            filters['original_dias_min'] = 0
-            filters['original_dias_max'] = 365
+            filters['original_valor_min'], filters['original_valor_max'] = 0.0, 10000.0
+            filters['original_dias_min'], filters['original_dias_max'] = 0, 365
         else:
             valortotal_col = st.session_state.df['valortotal'].dropna()
             atraso_col = st.session_state.df['atraso'].dropna()
-
             filters['original_valor_min'] = float(valortotal_col.min()) if not valortotal_col.empty else 0.0
             filters['original_valor_max'] = float(valortotal_col.max()) if not valortotal_col.empty else 10000.0
             filters['original_dias_min'] = int(atraso_col.min()) if not atraso_col.empty else 0
             filters['original_dias_max'] = int(atraso_col.max()) if not atraso_col.empty else 365
 
-        # Filtro por faixa de valores devidos.
-        st.markdown("**Faixa de Valores Devidos (R$):**")
-        valor_min = st.number_input(
-            "Valor Mínimo (R$)", min_value=0.0, value=filters['original_valor_min'],
-            step=1.0, format="%.2f", key="valor_min_input_filter"
-        )
-        valor_max = st.number_input(
-            "Valor Máximo (R$)", min_value=valor_min, value=filters['original_valor_max'],
-            step=1.0, format="%.2f", key="valor_max_input_filter"
-        )
-        filters['valor_range'] = (valor_min, valor_max)
+        # Filtros de valor e dias
+        with st.expander("Filtros por Valor e Atraso"):
+            st.markdown("**Faixa de Valores Devidos (R$):**")
+            valor_min, valor_max = st.slider(
+                "Valor",
+                min_value=filters['original_valor_min'],
+                max_value=filters['original_valor_max'],
+                value=(filters['original_valor_min'], filters['original_valor_max']),
+                key="valor_slider_filter"
+            )
+            filters['valor_range'] = (valor_min, valor_max)
 
-        # Filtro por categorias de valor (multiselect).
-        valor_options = ["Todos", "Pequenos (até R$ 500)", "Médios (R$ 500 - R$ 2.000)", "Grandes (acima de R$ 2.000)"]
-        filters['valor_categorias_selecionadas'] = st.multiselect(
-            "Categorias por Valor", options=valor_options,
-            default=st.session_state.valor_categorias_selecionadas_state, key="valor_categoria_multiselect_filter"
-        )
-        st.session_state.valor_categorias_selecionadas_state = filters['valor_categorias_selecionadas']
+            st.markdown("**Faixa de Dias em Atraso:**")
+            dias_min, dias_max = st.slider(
+                "Dias",
+                min_value=filters['original_dias_min'],
+                max_value=filters['original_dias_max'],
+                value=(filters['original_dias_min'], filters['original_dias_max']),
+                key="dias_slider_filter"
+            )
+            filters['dias_range'] = (dias_min, dias_max)
 
-        st.markdown("---") # Separador visual.
+    return filters
 
-        # Filtro por faixa de dias em atraso.
-        st.markdown("**Dias em Atraso (faixa personalizada):**")
-        dias_min = st.number_input(
-            "Mínimo de Dias", min_value=0, value=filters['original_dias_min'],
-            step=1, key="dias_min_input_filter"
-        )
-        dias_max = st.number_input(
-            "Máximo de Dias", min_value=dias_min, value=filters['original_dias_max'],
-            step=1, key="dias_max_input_filter"
-        )
-        filters['dias_range'] = (dias_min, dias_max)
-
-        # Filtro por status de atraso (categorias multiselect).
-        atraso_options = ["Todos", "Iniciando (1-30 dias)", "Moderado (31-90 dias)", "Atrasado (91-180 dias)", "Crítico (acima de 180 dias)"]
-        filters['status_atraso_selecionados'] = st.multiselect(
-            "Status do Atraso", options=atraso_options,
-            default=st.session_state.status_atraso_selecionadas_state, key="status_atraso_multiselect_filter"
-        )
-        st.session_state.status_atraso_selecionadas_state = filters['status_atraso_selecionados']
-
-        st.markdown("---")
-
-        # Filtro de busca por nome (texto).
-        filters['nome_search'] = st.text_input(
-            "Buscar por nome",
-            placeholder="Digite parte do nome para filtrar...",
-            help="Filtre os devedores que contém este texto no nome",
-            key="nome_search_input_filter"
-        )
-
-    return filters # Retorna o dicionário de filtros aplicados.
-
-# Função para aplicar os filtros selecionados ao DataFrame.
+# ### ALTERADO ### - Função de filtros aprimorada
 def apply_filters(df, filters):
     if df is None or df.empty:
         return pd.DataFrame()
 
     filtered = df.copy()
 
-    # Garantir que as colunas existem e tratar nulos
-    if 'valortotal' not in filtered.columns:
-        filtered['valortotal'] = 0.0
-    else:
-        filtered['valortotal'] = pd.to_numeric(filtered['valortotal'], errors='coerce').fillna(0)
-    
-    if 'atraso' not in filtered.columns:
-        filtered['atraso'] = 0
-    else:
-        filtered['atraso'] = pd.to_numeric(filtered['atraso'], errors='coerce').fillna(0)
-    
-    if 'nome' not in filtered.columns:
-        filtered['nome'] = ''
-    else:
-        filtered['nome'] = filtered['nome'].astype(str).fillna('')
+    # Garantir tipos de dados corretos para filtragem
+    filtered['valortotal'] = pd.to_numeric(filtered['valortotal'], errors='coerce').fillna(0)
+    filtered['atraso'] = pd.to_numeric(filtered['atraso'], errors='coerce').fillna(0)
+    filtered['nome'] = filtered['nome'].astype(str).fillna('')
+    # 'pessoa' é o ID, convertido para string para a busca funcionar com 'contains'
+    filtered['pessoa'] = filtered['pessoa'].astype(str).fillna('')
 
-    # Mapeamentos para as categorias de valor e atraso.
-    valor_categorias_map = {
-        "Pequenos (até R$ 500)": (None, 500),
-        "Médios (R$ 500 - R$ 2.000)": (500, 2000),
-        "Grandes (acima de R$ 2.000)": (2000, None)
-    }
-
-    atraso_status_map = {
-        "Iniciando (1-30 dias)": (None, 30),
-        "Moderado (31-90 dias)": (30, 90),
-        "Atrasado (91-180 dias)": (90, 180),
-        "Crítico (acima de 180 dias)": (180, None)
-    }
+    # ### NOVO ### - Lógica de busca unificada (Nome ou ID)
+    if filters['search_term']:
+        term = filters['search_term'].strip()
+        # Busca case-insensitive no nome OU no ID (pessoa)
+        name_match = filtered['nome'].str.contains(term, case=False, na=False)
+        id_match = filtered['pessoa'].str.contains(term, case=False, na=False)
+        filtered = filtered[name_match | id_match]
 
     # Aplica o filtro por faixa de valor.
-    if filters['valor_range'][0] != filters['original_valor_min'] or \
-       filters['valor_range'][1] != filters['original_valor_max']:
+    if filters['valor_range'] != (filters['original_valor_min'], filters['original_valor_max']):
         filtered = filtered[
             (filtered['valortotal'] >= filters['valor_range'][0]) &
             (filtered['valortotal'] <= filters['valor_range'][1])
         ]
 
     # Aplica o filtro por faixa de dias em atraso.
-    if filters['dias_range'][0] != filters['original_dias_min'] or \
-       filters['dias_range'][1] != filters['original_dias_max']:
+    if filters['dias_range'] != (filters['original_dias_min'], filters['original_dias_max']):
         filtered = filtered[
             (filtered['atraso'] >= filters['dias_range'][0]) &
             (filtered['atraso'] <= filters['dias_range'][1])
         ]
 
-    # Aplica o filtro por categorias de valor.
-    if filters['valor_categorias_selecionadas'] and "Todos" not in filters['valor_categorias_selecionadas']:
-        combined_valor_filter = pd.Series([False] * len(filtered), index=filtered.index)
-        for categoria in filters['valor_categorias_selecionadas']:
-            min_val, max_val = valor_categorias_map.get(categoria, (None, None))
-            if min_val is not None and max_val is not None:
-                combined_valor_filter |= ((filtered['valortotal'] > min_val) & (filtered['valortotal'] <= max_val))
-            elif min_val is not None:
-                combined_valor_filter |= (filtered['valortotal'] > min_val)
-            elif max_val is not None:
-                combined_valor_filter |= (filtered['valortotal'] <= max_val)
-        filtered = filtered[combined_valor_filter]
+    return filtered
 
-    # Aplica o filtro por status de atraso.
-    if filters['status_atraso_selecionados'] and "Todos" not in filters['status_atraso_selecionados']:
-        combined_atraso_filter = pd.Series([False] * len(filtered), index=filtered.index)
-        for status in filters['status_atraso_selecionados']:
-            min_atraso, max_atraso = atraso_status_map.get(status, (None, None))
-            if min_atraso is not None and max_atraso is not None:
-                combined_atraso_filter |= ((filtered['atraso'] > min_atraso) & (filtered['atraso'] <= max_atraso))
-            elif min_atraso is not None:
-                combined_atraso_filter |= (filtered['atraso'] > min_atraso)
-            elif max_atraso is not None:
-                combined_atraso_filter |= (filtered['atraso'] <= max_atraso)
-        filtered = filtered[combined_atraso_filter]
-
-    # Aplica o filtro de busca por nome.
-    if filters['nome_search']:
-        if 'nome' in filtered.columns and pd.api.types.is_string_dtype(filtered['nome']):
-            filtered = filtered[
-                filtered['nome'].str.contains(
-                    filters['nome_search'],
-                    case=False, # Ignora maiúsculas/minúsculas.
-                    na=False # Trata valores NaN como False.
-                )
-            ]
-        else:
-            st.warning("Coluna 'nome' não encontrada ou não é do tipo texto para o filtro de busca.")
-
-    return filtered # Retorna o DataFrame com os filtros aplicados.
-
-# Função para renderizar os controles de dados (limpar filtros, exportar tabela filtrada).
 def render_data_controls():
-
-    col1, col2 = st.columns([1, 2]) # Duas colunas para os botões.
-
+    col1, col2 = st.columns([0.3, 1])
     with col1:
-        # Botão para limpar todos os filtros.
-        if st.button("🧹 Limpar Filtros", key="clear_filters_btn"):
-            st.session_state.page_number = 1 # Volta para a primeira página.
-            st.session_state.valor_categorias_selecionadas_state = ["Todos"] # Reseta filtros de categoria.
-            st.session_state.status_atraso_selecionadas_state = ["Todos"] # Reseta filtros de status.
-            st.session_state.should_reload_df = True 
-            st.rerun() # Reinicia o script.
+        if st.button("🧹 Limpar Filtros", key="clear_filters_btn", use_container_width=True):
+            st.session_state.page_number = 1
+            st.session_state.search_term_state = ""
+            st.session_state.should_reload_df = True
+            # Limpa o estado da edição para evitar atualizações indesejadas
+            st.session_state.edited_df_state = None 
+            st.rerun()
 
     with col2:
+         # Botão para exportar a tabela filtrada
+        if not st.session_state.filtered_df.empty:
+            excel_data, msg = export_devedores_to_excel(st.session_state.filtered_df)
+            st.download_button(
+                label="📤 Exportar Tabela Filtrada para Excel",
+                data=excel_data,
+                file_name=f"devedores_filtrados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key="export_filtered_excel_btn",
+                use_container_width=True
+            )
 
-        if st.button("📤 Exportar Tabela Filtrada para Excel", key="export_filtered_excel_btn"):
-            if st.session_state.filtered_df is not None and not st.session_state.filtered_df.empty:
+# ### NOVO ### - Função para processar as edições feitas na tabela
+def process_table_edits(edited_df, original_df):
+    """Compara o DataFrame editado com o original e atualiza o banco de dados."""
+    if edited_df.equals(original_df):
+        return # Sem mudanças, não faz nada
 
-                excel_data, export_message = export_devedores_to_excel(st.session_state.filtered_df)
-                if excel_data:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"devedores_filtrados_{timestamp}.xlsx"
-                    st.download_button(
-                        label="⬇️ Baixar Arquivo Filtrado",
-                        data=excel_data,
-                        file_name=filename,
-                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                        key="download_filtered_excel_btn"
-                    )
-                else:
-                    st.warning(export_message)
+    # Encontra as diferenças
+    diff = original_df.compare(edited_df)
+    
+    updates_processed = 0
+    for idx in diff.index:
+        devedor_id = original_df.loc[idx, 'id'] # Assume que a coluna de ID se chama 'id'
+        changes = {}
+        
+        # Itera sobre as colunas que mudaram para este índice (idx)
+        for col in diff.columns.levels[0]:
+            old_val = diff.loc[idx, (col, 'self')]
+            new_val = diff.loc[idx, (col, 'other')]
+            
+            # Checa se a mudança é real (compare() pode mostrar NaNs)
+            if pd.notna(new_val) and new_val != old_val:
+                changes[col] = new_val
+        
+        if changes:
+            # Se o status mudou para 'Pago', atualiza a data de pagamento
+            if 'status' in changes and changes['status'] == StatusDevedor.PAGO.value:
+                changes['data_pagamento'] = datetime.now().date()
+
+            # Chama a função de serviço para atualizar o DB
+            success, message = update_devedor_in_db(st.session_state.db_engine, devedor_id, changes)
+            if success:
+                updates_processed += 1
             else:
-                st.warning("Nenhum dado disponível para exportar")
+                st.error(f"Erro ao atualizar devedor ID {devedor_id}: {message}")
+
+    if updates_processed > 0:
+        st.success(f"{updates_processed} registro(s) atualizado(s) com sucesso!")
+        st.session_state.should_reload_df = True # Marca para recarregar os dados
+        st.rerun()
+
 
 def show_lista_devedores_tab(filters):
-
     st.title("📋 Lista de Devedores")
 
-    with st.expander("➕ Adicionar Novo Devedor", expanded=False):
-        with st.form("novo_devedor_form"): # Formulário Streamlit para agrupamento de widgets.
-            pessoa_id = st.text_input("ID Pessoa (Opcional - do seu sistema original, se houver)", max_chars=50, key="new_devedor_pessoa_id_form")
-            nome = st.text_input("Nome Completo*", max_chars=100, key="new_devedor_nome_form")
-            valor = st.number_input("Valor Devido (R$)*", min_value=0.01, format="%.2f", key="new_devedor_valor_form")
-            atraso = st.number_input("Dias em Atraso*", min_value=0, value=0, step=1, key="new_devedor_atraso_form")
-            telefone = st.text_input("Telefone (Opcional)", max_chars=20, key="new_devedor_telefone_form")
-
-            # Botão de submit do formulário. O `key` é fundamental para evitar erros com múltiplas instâncias.
-            if st.form_submit_button("Adicionar Devedor"):
-                if not nome or valor <= 0:
-                    st.error("Por favor, preencha o Nome Completo e o Valor Devido.")  # Corrigido "preença" para "preencha"
-                else:
-                    # Chama a função de serviço para adicionar o devedor ao DB.
-                    success, message = add_devedor_to_db(st.session_state.db_engine, nome, valor, atraso, telefone, pessoa_id)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-                    st.session_state.should_reload_df = True # Marca para recarregar o DF.
-                    st.rerun() # Reinicia o script.
-
-    # Carrega dados do DB na primeira execução da sessão ou se a flag `should_reload_df` for True.
+    # Carrega dados do DB se necessário
     if st.session_state.should_reload_df:
         st.session_state.df = load_devedores_from_db(st.session_state.db_engine)
-        if st.session_state.df is not None and not st.session_state.df.empty:
-            # Ordenar por dias em atraso (maior primeiro) e depois por valor (maior primeiro)
-            st.session_state.df = st.session_state.df.sort_values(
-                by=['atraso', 'valortotal'], 
-                ascending=[False, False]
-            )
-        st.session_state.filtered_df = st.session_state.df.copy() if st.session_state.df is not None else pd.DataFrame()
+        if st.session_state.df is not None:
+            st.session_state.df = st.session_state.df.sort_values(by=['atraso', 'valortotal'], ascending=[False, False])
         st.session_state.should_reload_df = False
+        st.session_state.page_number = 1 # Reseta a página ao recarregar
 
-    else:
-        pd.DataFrame()
-        st.session_state.should_reload_df = False
-
-    # Mensagem se o banco de dados estiver vazio.
-    if st.session_state.df is not None and st.session_state.df.empty:
-        st.info("Nenhum devedor encontrado no banco de dados. Adicione um novo ou importe de um Excel.")
-        render_data_controls()
+    if st.session_state.df is None or st.session_state.df.empty:
+        st.info("ℹ️ Nenhum devedor encontrado no banco de dados. Adicione um novo ou importe de um Excel.")
         return
 
     # Aplica os filtros ao DataFrame.
     st.session_state.filtered_df = apply_filters(st.session_state.df, filters)
 
-    # Informações sobre o total de registros.
     total_registros_original = len(st.session_state.df)
     total_registros_filtrados = len(st.session_state.filtered_df)
-    st.info(f"📊 **Total de registros:** {total_registros_filtrados} "
-              f"de {total_registros_original} (filtrados)")
+    st.info(f"📊 **Total de registros:** {total_registros_filtrados} de {total_registros_original} (filtrados)")
 
-    st.subheader("Registros Filtrados")
+    st.subheader("Registros de Devedores")
+    render_data_controls() # Adiciona controles de limpar/exportar
 
-    # Controles de paginação (itens por página).
-    st.session_state.items_per_page = st.selectbox(
-        "Itens por página:",
-        options=[10, 25, 50, 100, "Todos"],
-        index=[10, 25, 50, 100, "Todos"].index(st.session_state.items_per_page),
-        key="items_per_page_select_main"
-    )
+    # Paginação
+    items_per_page_options = [10, 25, 50, 100]
+    if total_registros_filtrados > 100:
+        items_per_page_options.append(total_registros_filtrados)
+    
+    if st.session_state.items_per_page > total_registros_filtrados:
+        st.session_state.items_per_page = 25 # Reseta se for maior que o total
 
-    display_df = pd.DataFrame() # DataFrame que será de fato exibido (após paginação).
-
-    # Lógica de paginação.
-    if st.session_state.items_per_page != "Todos" and total_registros_filtrados > 0:
-        items_per_page = int(st.session_state.items_per_page)
-        total_pages = max(1, int(np.ceil(total_registros_filtrados / items_per_page)))
-
-        pag_col1, pag_col2, pag_col3 = st.columns([1, 1, 4]) # Colunas para botões de navegação.
-
-        with pag_col1:
-            if st.button("⏪ Anterior",
-                         disabled=(st.session_state.page_number == 1),
-                         help="Página anterior",
-                         key="prev_page_main"):
-                st.session_state.page_number = max(1, st.session_state.page_number - 1)
-                st.rerun()
-
-        with pag_col2:
-            if st.button("Próxima ⏩",
-                         disabled=(st.session_state.page_number >= total_pages),
-                         help="Próxima página",
-                         key="next_page_main"):
-                st.session_state.page_number = min(total_pages, st.session_state.page_number + 1)
-                st.rerun()
-
-        with pag_col3:
-            start_item = (st.session_state.page_number - 1) * items_per_page + 1
-            end_item = min(st.session_state.page_number * items_per_page, total_registros_filtrados)
-            if total_registros_filtrados > 0:
-                st.markdown(f"**Página {st.session_state.page_number} de {total_pages}** "
-                             f"• Itens {start_item}-{end_item} de {total_registros_filtrados}")
-            else:
-                st.markdown("**Nenhum item para exibir**")
-
-        start_idx = (st.session_state.page_number - 1) * items_per_page
-        end_idx = start_idx + items_per_page
-        display_df = st.session_state.filtered_df.iloc[start_idx:end_idx] # Seleciona a fatia da página.
-    else:
-        display_df = st.session_state.filtered_df # Se "Todos" ou poucos itens, mostra tudo.
-        if not display_df.empty:
-            st.markdown(f"**Mostrando todos os {len(display_df)} itens**")
-
-    # Exibição da tabela principal de devedores.
-    if not display_df.empty:
-        # Colunas a serem exibidas na tabela principal (sem as de cobrança, que serão para Cobrancas.py).
-        columns_to_display = ['pessoa', 'nome', 'valortotal', 'atraso', 'status', 'telefone', 'data_pagamento']
-        # Garante que apenas colunas existentes sejam exibidas.
-        columns_to_display = [col for col in columns_to_display if col in display_df.columns]
-
-        st.dataframe(
-            display_df[columns_to_display],
-            height=600,
-            use_container_width=True, # Usa a largura total disponível.
-            column_config={ # Configurações visuais para colunas específicas.
-                "pessoa": "ID Pessoa",
-                "nome": "Nome",
-                "valortotal": st.column_config.NumberColumn(
-                    "Valor Total",
-                    format="R$ %.2f"
-                ),
-                "atraso": st.column_config.NumberColumn(
-                    "Dias em Atraso",
-                    format="%d dias"
-                ),
-                "telefone": "Telefone",
-                "status": "Status Atual",
-                "data_pagamento": st.column_config.DateColumn(
-                    "Data Pagamento",
-                    format="DD/MM/YYYY"
-                )
-            },
-            hide_index=True # Oculta o índice padrão do Pandas.
+    page_col1, page_col2 = st.columns([0.7, 0.3])
+    with page_col2:
+        st.session_state.items_per_page = st.selectbox(
+            "Itens por página:",
+            options=items_per_page_options,
+            index=items_per_page_options.index(st.session_state.items_per_page),
+            key="items_per_page_select_main"
         )
+    
+    items_per_page = st.session_state.items_per_page
+    total_pages = max(1, int(np.ceil(total_registros_filtrados / items_per_page)))
+    st.session_state.page_number = min(st.session_state.page_number, total_pages)
 
+    start_idx = (st.session_state.page_number - 1) * items_per_page
+    end_idx = start_idx + items_per_page
+    display_df = st.session_state.filtered_df.iloc[start_idx:end_idx].copy()
+
+    with page_col1:
+        # Controles de navegação da página
+        nav_cols = st.columns([1, 1, 3])
+        if nav_cols[0].button("⏪ Anterior", disabled=(st.session_state.page_number == 1), key="prev_page_main", use_container_width=True):
+            st.session_state.page_number -= 1
+            st.rerun()
+        if nav_cols[1].button("Próxima ⏩", disabled=(st.session_state.page_number >= total_pages), key="next_page_main", use_container_width=True):
+            st.session_state.page_number += 1
+            st.rerun()
         
+        start_item = start_idx + 1
+        end_item = min(end_idx, total_registros_filtrados)
+        nav_cols[2].markdown(f"**Página {st.session_state.page_number} de {total_pages}** (Itens {start_item}-{end_item})")
+    
+    # ### ALTERADO ### - Usando st.data_editor para permitir edições
+    if not display_df.empty:
+        # Garante que a coluna de status seja do tipo Categoria para o Selectbox funcionar bem
+        status_options = [s.value for s in StatusDevedor]
+        display_df['status'] = pd.Categorical(display_df['status'], categories=status_options, ordered=False)
+
+        # Colunas visíveis e suas configurações
+        columns_to_display = {
+            "pessoa": st.column_config.TextColumn("ID Pessoa", disabled=True),
+            "nome": st.column_config.TextColumn("Nome", disabled=True),
+            "valortotal": st.column_config.NumberColumn("Valor Total", format="R$ %.2f", disabled=True),
+            "atraso": st.column_config.NumberColumn("Dias Atraso", format="%d dias", disabled=True),
+            "status": st.column_config.SelectboxColumn(
+                "Status Atual",
+                options=status_options,
+                required=True,
+            ),
+            "telefone": st.column_config.TextColumn("Telefone", disabled=True),
+            "data_pagamento": st.column_config.DateColumn("Data Pagamento", format="DD/MM/YYYY", disabled=True)
+        }
+        
+        # Precisamos do ID para fazer o update, mas não precisamos exibi-lo se 'pessoa' já for o ID.
+        # Se 'id' for diferente de 'pessoa', podemos ocultá-lo.
+        hidden_columns = ['id'] if 'id' in display_df.columns else []
+
+        edited_df = st.data_editor(
+            display_df,
+            height=600,
+            use_container_width=True,
+            column_config=columns_to_display,
+            hide_index=True,
+            num_rows="dynamic", # Permite adicionar/remover linhas, mas desabilitamos para focar na edição
+            disabled=display_df.columns.drop('status'), # Desabilita edição em todas as colunas exceto 'status'
+            key="devedores_editor"
+        )
+        
+        # ### NOVO ### - Compara o estado anterior com o atual para salvar as mudanças
+        # Usamos uma cópia do dataframe da página atual para comparação
+        if 'page_df_before_edit' not in st.session_state or not st.session_state.page_df_before_edit.equals(display_df):
+             st.session_state.page_df_before_edit = display_df.copy()
+
+        if st.button("💾 Salvar Alterações", key="save_changes_btn"):
+             process_table_edits(edited_df, st.session_state.page_df_before_edit)
+
     else:
         st.warning("Nenhum registro encontrado com os filtros aplicados.")
 
-    render_data_controls() 
 
 if __name__ == "__main__":
-    filters_from_sidebar = sidebar_content()
-    show_lista_devedores_tab(filters_from_sidebar)
+    active_filters = sidebar_content()
+    show_lista_devedores_tab(active_filters)
