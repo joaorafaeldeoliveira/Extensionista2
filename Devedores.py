@@ -25,8 +25,8 @@ from devedores_service import (
 
 # --- CACHE DE CARREGAMENTO ---
 @st.cache_data(show_spinner=False)
-def cached_load_devedores(engine):
-    return load_devedores_from_db(engine)
+def cached_load_devedores(_engine):
+    return load_devedores_from_db(_engine)
 
 # --- ESTADO INICIAL ---
 def initialize_session_state():
@@ -47,7 +47,6 @@ def initialize_session_state():
 
 initialize_session_state()
 
-# --- FUNÇÕES AUXILIARES ---
 def validate_excel_columns(df: pd.DataFrame, required_cols: list) -> tuple:
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
