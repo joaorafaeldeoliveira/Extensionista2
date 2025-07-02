@@ -161,38 +161,32 @@ def exibir_acoes_cobranca_tab(df_completo: pd.DataFrame):
         exibir_devedor_card(row, from_calendar=False)
 
 def exibir_calendario_cobrancas_tab(df_completo: pd.DataFrame):
-    """Exibe a aba 'Calendário de Cobranças'."""
     st.header("🗓️ Calendário e Agendamentos")
 
     if df_completo.empty:
         st.info("Nenhum devedor encontrado no banco de dados.")
         return
 
-    # --- OTIMIZAÇÃO 4: UX de Agendamento com Selectbox ---
     with st.expander("📝 Agendar/Reagendar Cobrança Manualmente", expanded=True):
         devedores_agendaveis = df_completo[df_completo['status'] != StatusDevedor.PAGO.value].sort_values('nome')
-        
+
         if devedores_agendaveis.empty:
             st.info("Nenhum devedor disponível para agendamento.")
         else:
-            # Cria opções para o selectbox
             opcoes = {f"{row['nome']} (ID: {row['id']})": row['id'] for _, row in devedores_agendaveis.iterrows()}
             opcoes_list = ["Selecione um devedor para agendar..."] + list(opcoes.keys())
-            
             selecao_devedor_label = st.selectbox("Buscar ou selecionar devedor:", options=opcoes_list, index=0)
 
             if selecao_devedor_label != "Selecione um devedor para agendar...":
                 devedor_id = opcoes[selecao_devedor_label]
                 devedor_selecionado = devedores_agendaveis[devedores_agendaveis['id'] == devedor_id].iloc[0]
-                
                 st.markdown("---")
                 st.subheader(f"Agendar para: {devedor_selecionado['nome']}")
-                
+
                 data_atual = devedor_selecionado['data_cobranca']
                 default_date = data_atual.date() if pd.notna(data_atual) else date.today()
 
                 nova_data = st.date_input("Nova Data para Cobrança", value=default_date, min_value=date.today(), key=f"data_ag_{devedor_id}")
-                
                 if st.button("🗓️ Confirmar Agendamento", type="primary", key=f"conf_ag_{devedor_id}"):
                     success, msg = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id, nova_data)
                     st.toast(msg, icon="✅" if success else "❌")
@@ -200,9 +194,7 @@ def exibir_calendario_cobrancas_tab(df_completo: pd.DataFrame):
                         cached_load_data.clear()
                         st.rerun()
 
-    # --- Lógica do Calendário (otimizada) ---
-    st.subheader("📅 Visualização em Calendário")
-    
+    # Pré-processamento
     df_agendados = df_completo[df_completo['data_cobranca'].notna()].copy()
     df_agendados['day'] = df_agendados['data_cobranca'].dt.day
     df_agendados['month'] = df_agendados['data_cobranca'].dt.month
@@ -213,41 +205,60 @@ def exibir_calendario_cobrancas_tab(df_completo: pd.DataFrame):
         year = st.selectbox("Ano", range(date.today().year - 2, date.today().year + 3), index=2)
     with col2:
         month = st.selectbox("Mês", range(1, 13), format_func=lambda m: calendar.month_name[m], index=date.today().month - 1)
-        
-    # Filtra eventos para o mês/ano selecionado
-    events_this_month = df_agendados[(df_agendados['year'] == year) & (df_agendados['month'] == month)]
-    events_by_day = events_this_month.groupby('day').size()
 
-    # Geração do HTML do calendário (mantida, mas agora mais rápida por operar em dados pré-filtrados)
+    # Eventos do mês selecionado
+    events_this_month = df_agendados[(df_agendados['year'] == year) & (df_agendados['month'] == month)]
+    events_by_day = events_this_month['day'].value_counts().to_dict()
+
+    # HTML do calendário
     cal = calendar.HTMLCalendar(calendar.SUNDAY)
     month_html = cal.formatmonth(year, month)
 
-    # Injeta contagem de eventos no HTML
     for day, count in events_by_day.items():
-        event_html = f"<br><span class='event-count'>{count}</span>"
-        month_html = month_html.replace(f'>{day}</td>', f' data-day="{day}">{day}{event_html}</td>', 1)
-    
+        event_html = f"<div class='event-count'>{count}</div>"
+        month_html = month_html.replace(f'>{day}</td>', f'><div class="day-cell">{day}{event_html}</div></td>')
+
     # Destaque do dia atual
     if year == date.today().year and month == date.today().month:
-        month_html = month_html.replace(f'data-day="{date.today().day}"', f'data-day="{date.today().day}" class="current-day"')
+        day_str = str(date.today().day)
+        month_html = month_html.replace(f'>{day_str}</div>', f'><div class="day-cell today">{day_str}</div>')
 
-    st.markdown(f"""
+    # Estilo novo
+    st.markdown("""
     <style>
-        .calendar-table {{ width: 100%; border-collapse: collapse; }}
-        .calendar-table th {{ background-color: #f8f9fa; padding: 10px; text-align: center; }}
-        .calendar-table td {{ border: 1px solid #dee2e6; padding: 10px; height: 100px; vertical-align: top; text-align: right; }}
-        .calendar-table td.noday {{ background: #f8f9fa; }}
-        .event-count {{ font-size: 0.8em; background-color: #007bff; color: white; padding: 2px 6px; border-radius: 10px; float: left; }}
-        .current-day {{ background-color: #e9f5ff; font-weight: bold; }}
+    table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
+    th { background-color: #f4f4f4; padding: 8px; text-align: center; }
+    td { border: 1px solid #ccc; height: 90px; vertical-align: top; padding: 5px; text-align: right; position: relative; }
+    td.noday { background-color: #f9f9f9; }
+    .day-cell { font-size: 16px; position: relative; z-index: 1; }
+    .event-count {
+        background-color: #0d6efd;
+        color: white;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 12px;
+        display: inline-block;
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        z-index: 2;
+    }
+    .today {
+        background-color: #e8f4ff;
+        border: 2px solid #0d6efd;
+        border-radius: 6px;
+        padding: 2px 6px;
+        display: inline-block;
+    }
     </style>
-    {month_html}
     """, unsafe_allow_html=True)
 
-    # Detalhes do dia selecionado
+    st.markdown(month_html, unsafe_allow_html=True)
+
+    # Seleção de dia
     st.session_state.selected_date = st.date_input("Ver cobranças para a data:", value=st.session_state.selected_date)
-    
     cobrancas_no_dia = df_agendados[df_agendados['data_cobranca'].dt.date == st.session_state.selected_date]
-    
+
     st.subheader(f"📌 Cobranças para {st.session_state.selected_date.strftime('%d/%m/%Y')}")
     if not cobrancas_no_dia.empty:
         for _, row in cobrancas_no_dia.iterrows():
