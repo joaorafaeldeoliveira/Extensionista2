@@ -223,6 +223,9 @@ def show_lista_devedores_tab(filters):
                     if success:
                         st.success(message)
                         st.session_state.should_reload_df = True
+                        st.session_state.search_term_state = "" 
+
+                        cached_load_devedores.clear()
                         st.rerun()
                     else:
                         st.error(message)
@@ -261,17 +264,17 @@ def show_lista_devedores_tab(filters):
             if sucessos > 0:
                 st.success(f"{sucessos} registro(s) removido(s) com sucesso!")
             
-            # Limpa e recarrega
             st.session_state.confirming_delete = False
             st.session_state.ids_to_delete = []
             st.session_state.should_reload_df = True
+            cached_load_devedores.clear()
             st.rerun()
 
         if col2.button("Cancelar", use_container_width=True):
             st.session_state.confirming_delete = False
             st.session_state.ids_to_delete = []
             st.rerun()
-        return # Impede que o resto da página seja desenhado
+        return 
 
     total_registros_original = len(st.session_state.df)
     total_registros_filtrados = len(st.session_state.filtered_df)
