@@ -61,13 +61,10 @@ def cached_load_data(_db_engine):
             
     return df
 
-# --- COMPONENTES REUTILIZÁVEIS DA UI ---
 def exibir_devedor_card(row, from_calendar=False):
-    """Exibe os detalhes de um devedor em um card com ações. (Função mantida, pois é bem estruturada)."""
     devedor_id = int(row['id'])
     fase_atual = int(row.get('fase_cobranca', 1))
 
-    # OTIMIZAÇÃO: Usar uma chave única e mais simples para os botões.
     key_suffix = f"{devedor_id}_{'cal' if from_calendar else 'acoes'}"
 
     with st.container(border=True):
@@ -89,11 +86,11 @@ def exibir_devedor_card(row, from_calendar=False):
             st.markdown(f"**Data Pagamento:** {data_pag_str} | **Última Cobrança:** {ultima_cob_str}")
 
         with col_actions:
-            st.write("") # Espaçamento
+            st.write("")  # Espaçamento
             help_text = "Marca a cobrança como feita, avança a fase e agenda a próxima para 10 dias."
-            if fase_atual == 3: help_text += " Esta é a última fase de avanço automático."
-            
-            # OTIMIZAÇÃO 2: Limpeza explícita do cache em cada ação de escrita
+            if fase_atual == 3:
+                help_text += " Esta é a última fase de avanço automático."
+
             if st.button("➡️ Cobrança Feita", key=f"cobranca_feita_{key_suffix}", use_container_width=True, help=help_text):
                 success, msg = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
@@ -101,7 +98,8 @@ def exibir_devedor_card(row, from_calendar=False):
                     cached_load_data.clear()
                     st.rerun()
 
-            if st.button("✅ Marcar como Pago", key=f"pago_{key_suffix}", use_container_width=True, disabled=(row['status'] == StatusDevedor.PAGO.value)):
+            if st.button("✅ Marcar como Pago", key=f"pago_{key_suffix}", use_container_width=True,
+                         disabled=(row['status'] == StatusDevedor.PAGO.value)):
                 success, msg = marcar_como_pago_in_db(st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
                 if success:
@@ -110,6 +108,34 @@ def exibir_devedor_card(row, from_calendar=False):
 
             if st.button("❌ Remover Devedor", key=f"remover_{key_suffix}", use_container_width=True, type="primary"):
                 success, msg = remover_devedor_from_db(st.session_state.db_engine, devedor_id)
+                st.toast(msg, icon="✅" if success else "❌")
+                if success:
+                    cached_load_data.clear()
+                    st.rerun()
+
+            # --- NOVA ÁREA: Marcar cobrança manual ---
+            st.markdown("###### 📅 Marcar Cobrança Manual")
+            min_data = date.today()
+            max_data = date.today() + timedelta(days=3650)
+            data_atual = row['data_cobranca']
+            default_date = data_atual.date() if pd.notna(data_atual) else min_data
+            if default_date < min_data:
+                default_date = min_data
+            elif default_date > max_data:
+                default_date = max_data
+
+            nova_data = st.date_input(
+                label="Nova data",
+                value=default_date,
+                min_value=min_data,
+                max_value=max_data,
+                key=f"manual_agendamento_data_{key_suffix}"
+            )
+
+            if st.button("📌 Agendar", key=f"manual_agendar_{key_suffix}", use_container_width=True):
+                success,msg = marcar_cobranca_feita_e_reagendar_in_db(
+                    st.session_state.db_engine, devedor_id, nova_data
+                )
                 st.toast(msg, icon="✅" if success else "❌")
                 if success:
                     cached_load_data.clear()
