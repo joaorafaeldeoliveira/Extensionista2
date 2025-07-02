@@ -23,12 +23,10 @@ from devedores_service import (
     update_devedor_in_db
 )
 
-# --- CACHE DE CARREGAMENTO ---
 @st.cache_data(show_spinner=False)
 def cached_load_devedores(_engine):
     return load_devedores_from_db(_engine)
 
-# --- ESTADO INICIAL ---
 def initialize_session_state():
     defaults = {
         'df': None, 'filtered_df': None, 'edited_df_state': None,
@@ -283,7 +281,7 @@ def show_lista_devedores_tab(filters):
     st.subheader("Registros de Devedores")
     render_data_controls() 
 
-    # Lógica de Paginação (sem alterações)
+    
     items_per_page_options = [10, 25, 50, 100]
     if total_registros_filtrados > 100:
         items_per_page_options.append(total_registros_filtrados)
@@ -342,7 +340,7 @@ def show_lista_devedores_tab(filters):
         
         hidden_columns = ['id'] if 'id' in display_df.columns else []
 
-        # Desabilita a edição em todas as colunas, exceto 'status' e a nova 'Excluir'
+        
         disabled_columns = display_df.columns.drop(['status', 'Excluir'])
 
         edited_df = st.data_editor(
