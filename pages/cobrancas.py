@@ -285,6 +285,7 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
     cal = calendar.HTMLCalendar(calendar.SUNDAY)
     month_html = cal.formatmonth(year, month)
 
+
     for day, count in events_by_day.items():
         event_html = f"<div class='event-count'>{count}</div>"
         month_html = month_html.replace(f'>{day}</td>', f'><div class="day-cell">{day}{event_html}</div></td>')
@@ -294,6 +295,7 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
         day_str = str(date.today().day)
         month_html = month_html.replace(f'>{day_str}</div>', f'><div class="day-cell today">{day_str}</div>')
 
+    st.markdown(month_html, unsafe_allow_html=True)
     # Estilo novo
     st.markdown("""
     <style>
@@ -378,29 +380,44 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
 def main():
     st.title("📈 Sistema de Gestão de Cobranças")
 
-    # Para os contadores do calendário, uma busca inicial ainda pode ser útil.
-    # Esta busca deve ser leve, pegando apenas `id` e `data_cobranca`.
+    # MUDANÇA: A função de cache agora vai incluir as colunas 'nome' e 'status'
+    # para alimentar o seletor de agendamento manual.
     @st.cache_data(show_spinner="Carregando calendário...")
-    def load_minimal_calendar_data(_db_engine):
-        # O ideal é ter uma função em devedores_service que retorne apenas as colunas necessárias
-        # Ex: SELECT id, data_cobranca FROM devedores WHERE status != 'PAGO'
-        # Por enquanto, podemos usar a função antiga e filtrar as colunas
+    def load_data_for_calendar_tab(_db_engine):
+        """
+        Carrega os dados necessários para TODA a aba de calendário:
+        - id, nome, status: para o seletor de agendamento.
+        - data_cobranca: para os contadores do calendário HTML.
+        """
+        # Esta função poderia ser otimizada no seu serviço de banco de dados
+        # para já trazer apenas as colunas necessárias.
+        # Ex: SELECT id, nome, status, data_cobranca FROM devedores
         df_full = load_devedores_from_db(_db_engine)
+        
         if df_full.empty:
-            return pd.DataFrame(columns=['id', 'data_cobranca'])
+            # Retorna um DataFrame vazio com a estrutura correta se não houver dados
+            return pd.DataFrame(columns=['id', 'nome', 'status', 'data_cobranca'])
+        
+        # Garante que as colunas necessárias existam
+        required_cols = ['id', 'nome', 'status', 'data_cobranca']
+        for col in required_cols:
+            if col not in df_full.columns:
+                # Adiciona coluna vazia se não existir para evitar KeyErrors
+                df_full[col] = None 
         
         df_full['data_cobranca'] = pd.to_datetime(df_full['data_cobranca'], errors='coerce')
-        return df_full[['id', 'data_cobranca']]
 
-    df_contagem_calendario = load_minimal_calendar_data(st.session_state.db_engine)
+        return df_full[required_cols]
+
+    df_para_aba_calendario = load_data_for_calendar_tab(st.session_state.db_engine)
     
     tab1, tab2 = st.tabs(["Ações de Cobrança", "Calendário e Agendamentos"])
 
     with tab1:
         exibir_acoes_cobranca_tab()
     with tab2:
-        # Passamos o DataFrame mínimo apenas para os contadores do calendário HTML
-        exibir_calendario_cobrancas_tab(df_contagem_calendario)
+        # Passa o DataFrame que agora contém todas as colunas necessárias
+        exibir_calendario_cobrancas_tab(df_para_aba_calendario)
 
 if __name__ == "__main__":
     main()
