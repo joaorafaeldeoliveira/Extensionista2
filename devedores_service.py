@@ -5,6 +5,10 @@ from sqlalchemy import select
 from datetime import datetime, date, timedelta
 from functools import wraps
 from typing import Tuple, Any, Dict, List
+from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from datetime import date, datetime
+import math
 
 from database import get_session, Devedor, StatusDevedor
 
@@ -203,3 +207,84 @@ def marcar_cobranca_feita_e_reagendar_in_db(session, devedor_id: int, data_progr
         devedor.fase_cobranca += 1
     
     return True, "Cobrança registrada e próxima agendada com sucesso."
+
+def get_devedores_para_acoes_count(db_engine, filtro_nome: str = None) -> int:
+    """Conta quantos devedores precisam de ação, aplicando filtros."""
+    with Session(db_engine) as session:
+        hoje = date.today()
+        query = session.query(func.count(Devedor.id))
+        
+        # Lógica de filtro replicada do seu app Streamlit
+        nao_pago = Devedor.status != StatusDevedor.PAGO.value
+        agendado_para_hoje = (Devedor.status == StatusDevedor.AGENDADO.value) & (func.date(Devedor.data_cobranca) == hoje)
+        requer_acao = Devedor.status != StatusDevedor.AGENDADO.value
+        
+        query = query.filter(nao_pago & or_(agendado_para_hoje, requer_acao))
+
+        if filtro_nome:
+            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
+            
+        return query.scalar()
+
+def get_devedores_para_acoes_paginated(db_engine, page: int, page_size: int, sort_column: str, sort_ascending: bool, filtro_nome: str = None) -> pd.DataFrame:
+    """Busca uma página de devedores que precisam de ação."""
+    with Session(db_engine) as session:
+        offset = page * page_size
+        hoje = date.today()
+        
+        query = session.query(Devedor)
+
+        # Mesma lógica de filtro
+        nao_pago = Devedor.status != StatusDevedor.PAGO.value
+        agendado_para_hoje = (Devedor.status == StatusDevedor.AGENDADO.value) & (func.date(Devedor.data_cobranca) == hoje)
+        requer_acao = Devedor.status != StatusDevedor.AGENDADO.value
+        
+        query = query.filter(nao_pago & or_(agendado_para_hoje, requer_acao))
+
+        if filtro_nome:
+            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
+
+        # Ordenação
+        coluna_ordenacao = getattr(Devedor, sort_column, Devedor.nome)
+        if not sort_ascending:
+            coluna_ordenacao = coluna_ordenacao.desc()
+        query = query.order_by(coluna_ordenacao)
+
+        # Paginação
+        query = query.limit(page_size).offset(offset)
+        
+        # Ler para o pandas
+        df = pd.read_sql(query.statement, session.bind)
+        return df
+
+def get_devedores_para_dia_count(db_engine, selected_date: date) -> int:
+    """
+    Conta o número total de cobranças agendadas para uma data específica.
+    """
+    with Session(db_engine) as session:
+        # Usamos func.date() para comparar apenas a parte da data, ignorando a hora.
+        query = session.query(func.count(Devedor.id)).filter(
+            func.date(Devedor.data_cobranca) == selected_date
+        )
+        total = query.scalar()
+        return total if total is not None else 0
+
+def get_devedores_para_dia_paginated(db_engine, selected_date: date, page: int, page_size: int) -> pd.DataFrame:
+    """
+    Busca uma página de devedores com cobrança agendada para uma data específica.
+    """
+    with Session(db_engine) as session:
+        offset = page * page_size
+        
+        query = session.query(Devedor).filter(
+            func.date(Devedor.data_cobranca) == selected_date
+        ).order_by(
+            Devedor.nome  # Ordenar por nome para consistência entre as páginas
+        ).limit(
+            page_size
+        ).offset(
+            offset
+        )
+        
+        df = pd.read_sql(query.statement, session.bind)
+        return df
