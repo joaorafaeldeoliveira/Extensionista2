@@ -13,7 +13,6 @@ st.set_page_config(
 
 try:
     from database import init_db, Devedor, StatusDevedor
-    # ## MUDANÇA: Importar as novas funções de serviço paginadas
     from devedores_service import (
         marcar_cobranca_feita_e_reagendar_in_db,
         marcar_como_pago_in_db,
@@ -22,9 +21,7 @@ try:
         get_devedores_para_acoes_paginated,
         load_devedores_from_db,
         get_devedores_para_dia_paginated,
-        get_devedores_para_acoes_paginated,
         get_devedores_para_dia_count
-
     )
 except ImportError as e:
     st.error(f"Erro ao importar módulos: {e}. Verifique se os arquivos de serviço e banco de dados estão corretos.")
@@ -36,12 +33,13 @@ if 'db_engine' not in st.session_state:
     st.session_state.db_engine = init_db()
 if 'selected_date' not in st.session_state:
     st.session_state.selected_date = date.today()
-## MUDANÇA: Adicionar estado para a paginação
 if 'page_num_acoes' not in st.session_state:
     st.session_state.page_num_acoes = 0 # Começa na página 0
-
 if 'page_num_cal' not in st.session_state:
     st.session_state.page_num_cal = 0
+# Adiciona um estado para controlar a aba ativa
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "Ações de Cobrança"
 
 
 # --- OTIMIZAÇÃO 1: CACHE CENTRALIZADO DE DADOS ---
@@ -84,8 +82,6 @@ def exibir_devedor_card(row, from_calendar=False):
             st.markdown(f"**Status:** {status_text}")
             st.markdown(f"**Fase da Cobrança:** {fase_atual}/3")
             
-            # ## MUDANÇA CORRIGIDA ##
-            # Lógica robusta para exibir os dias em atraso
             atraso_str = 'N/A'
             if 'atraso' in row and pd.notna(row['atraso']):
                 atraso_str = f"{int(row['atraso'])} dias"
@@ -96,7 +92,6 @@ def exibir_devedor_card(row, from_calendar=False):
             valor_total = row.get('valortotal', 0)
             st.write(f"**Valor Dívida:** R$ {valor_total:,.2f} | **Atraso:** {atraso_str}")
             
-            # Use .get() para segurança em todas as colunas de data
             data_pag_val = pd.to_datetime(row.get('data_pagamento'))
             ultima_cob_val = pd.to_datetime(row.get('ultima_cobranca'))
             
@@ -105,26 +100,28 @@ def exibir_devedor_card(row, from_calendar=False):
             st.markdown(f"**Data Pagamento:** {data_pag_str} | **Última Cobrança:** {ultima_cob_str}")
 
         with col_actions:
-            # O resto da lógica de botões continua igual
             st.write("") 
             
-            def clear_caches_and_rerun():
+            # Helper para limpar caches e recarregar a página
+            def clear_all_caches_and_rerun():
+                st.cache_data.clear()
                 st.rerun()
 
             if st.button("➡️ Cobrança Feita", key=f"cobranca_feita_{key_suffix}", use_container_width=True):
+                # Chamada sem nova_data, acionará o cálculo de 10 dias úteis no serviço
                 success, msg = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
-                if success: clear_caches_and_rerun()
+                if success: clear_all_caches_and_rerun()
 
             if st.button("✅ Marcar como Pago", key=f"pago_{key_suffix}", use_container_width=True, disabled=(row.get('status') == StatusDevedor.PAGO.value)):
                 success, msg = marcar_como_pago_in_db(st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
-                if success: clear_caches_and_rerun()
+                if success: clear_all_caches_and_rerun()
 
             if st.button("❌ Remover Devedor", key=f"remover_{key_suffix}", use_container_width=True, type="primary"):
                 success, msg = remover_devedor_from_db(st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
-                if success: clear_caches_and_rerun()
+                if success: clear_all_caches_and_rerun()
 
             # --- NOVA ÁREA: Marcar cobrança manual ---
             st.markdown("###### 📅 Marcar Cobrança Manual")
@@ -151,15 +148,14 @@ def exibir_devedor_card(row, from_calendar=False):
                 )
                 st.toast(msg, icon="✅" if success else "❌")
                 if success:
-    
-                    st.rerun()
+                    clear_all_caches_and_rerun()
 
 # --- LÓGICA DAS ABAS ---
 def exibir_acoes_cobranca_tab():
     """Exibe a aba 'Ações de Cobrança' com paginação."""
     st.header("🎯 Ações de Cobrança para Hoje")
 
-    PAGE_SIZE = 50 # ## MUDANÇA: Defina o tamanho da página
+    PAGE_SIZE = 50 
 
     # --- Filtros ---
     col1, col2 = st.columns(2)
@@ -176,8 +172,6 @@ def exibir_acoes_cobranca_tab():
         sort_by_desc = st.selectbox("Ordenar por:", options=list(sort_options.keys()), key="sort_acoes")
         sort_column, ascending = sort_options[sort_by_desc]
 
-    # ## MUDANÇA: Buscar o total de itens para calcular as páginas
-    # Idealmente, esta chamada também seria cacheada com st.cache_data
     total_items = get_devedores_para_acoes_count(st.session_state.db_engine, filtro_nome=filtro_nome)
 
     if total_items == 0:
@@ -186,11 +180,8 @@ def exibir_acoes_cobranca_tab():
         return
 
     total_pages = math.ceil(total_items / PAGE_SIZE)
-    # Garante que o número da página seja válido
     st.session_state.page_num_acoes = max(0, min(st.session_state.page_num_acoes, total_pages - 1))
 
-    # ## MUDANÇA: Buscar apenas os dados da página atual
-    # Use st.cache_data aqui para cachear a busca de cada página individualmente
     @st.cache_data(show_spinner="Carregando devedores...", ttl=60)
     def cached_get_paginated_data(page, page_size, sort_col, sort_asc, nome):
         df = get_devedores_para_acoes_paginated(st.session_state.db_engine, page, page_size, sort_col, sort_asc, nome)
@@ -206,7 +197,6 @@ def exibir_acoes_cobranca_tab():
 
     st.markdown(f"--- \nExibindo **{len(df_pagina)}** de **{total_items}** devedor(es).")
 
-    # ## MUDANÇA: Controles de Paginação
     col_pag_1, col_pag_2, col_pag_3 = st.columns([1, 2, 1])
     with col_pag_1:
         if st.button("⬅️ Anterior", use_container_width=True, disabled=(st.session_state.page_num_acoes == 0)):
@@ -232,7 +222,7 @@ def exibir_acoes_cobranca_tab():
 
 def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
     st.header("🗓️ Calendário e Agendamentos")
-    PAGE_SIZE_CAL = 50 # Tamanho da página para a lista do calendário
+    PAGE_SIZE_CAL = 50 
 
     if df_completo_para_contagem.empty:
         st.info("Nenhum devedor encontrado no banco de dados.")
@@ -262,6 +252,7 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
                     success, msg = marcar_cobranca_feita_e_reagendar_in_db(st.session_state.db_engine, devedor_id, nova_data)
                     st.toast(msg, icon="✅" if success else "❌")
                     if success:
+                        st.cache_data.clear() # Limpa o cache para recarregar os dados
                         st.rerun()
 
     # Pré-processamento
@@ -329,16 +320,15 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
     st.markdown("---")
     st.subheader("Ver cobranças para uma data específica")
 
-    # Controle de data com lógica para resetar a página
     selected_date_input = st.date_input("Selecione a data:", value=st.session_state.selected_date, key="cal_date_selector")
     
-    # Se o usuário escolher uma nova data, voltamos para a primeira página
     if selected_date_input != st.session_state.selected_date:
         st.session_state.selected_date = selected_date_input
         st.session_state.page_num_cal = 0
+        # Ao mudar a data, garante que a aba de calendário permaneça ativa
+        st.session_state.active_tab = "Calendário e Agendamentos" 
         st.rerun()
 
-    # 1. Buscar o total de devedores para o dia selecionado
     total_items = get_devedores_para_dia_count(st.session_state.db_engine, st.session_state.selected_date)
 
     if total_items == 0:
@@ -347,32 +337,31 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
         total_pages = math.ceil(total_items / PAGE_SIZE_CAL)
         st.session_state.page_num_cal = max(0, min(st.session_state.page_num_cal, total_pages - 1))
 
-        # 2. Buscar os dados paginados para o dia e página atuais
         @st.cache_data(show_spinner="Carregando agendamentos...", ttl=60)
         def cached_get_devedores_dia(s_date, page, page_size):
             df = get_devedores_para_dia_paginated(st.session_state.db_engine, s_date, page, page_size)
-            return process_dataframe(df) # Reutilize sua função de processamento
+            return process_dataframe(df)
 
         df_pagina_cal = cached_get_devedores_dia(st.session_state.selected_date, st.session_state.page_num_cal, PAGE_SIZE_CAL)
 
         st.markdown(f"Exibindo **{len(df_pagina_cal)}** de **{total_items}** cobrança(s) para **{st.session_state.selected_date.strftime('%d/%m/%Y')}**.")
 
-        # 3. Controles de Paginação
         col_pag_1, col_pag_2, col_pag_3 = st.columns([1, 2, 1])
         with col_pag_1:
             if st.button("⬅️ Anterior", key="cal_prev", use_container_width=True, disabled=(st.session_state.page_num_cal == 0)):
                 st.session_state.page_num_cal -= 1
+                st.session_state.active_tab = "Calendário e Agendamentos" # Mantém a aba ativa
                 st.rerun()
         with col_pag_2:
             st.write(f"<div style='text-align: center;'>Página {st.session_state.page_num_cal + 1} de {total_pages}</div>", unsafe_allow_html=True)
         with col_pag_3:
             if st.button("Próxima ➡️", key="cal_next", use_container_width=True, disabled=(st.session_state.page_num_cal >= total_pages - 1)):
                 st.session_state.page_num_cal += 1
+                st.session_state.active_tab = "Calendário e Agendamentos" # Mantém a aba ativa
                 st.rerun()
         
         st.markdown("---")
 
-        # 4. Exibir os cards da página atual
         for _, row in df_pagina_cal.iterrows():
             exibir_devedor_card(row, from_calendar=True)
 
@@ -380,8 +369,6 @@ def exibir_calendario_cobrancas_tab(df_completo_para_contagem: pd.DataFrame):
 def main():
     st.title("📈 Sistema de Gestão de Cobranças")
 
-    # MUDANÇA: A função de cache agora vai incluir as colunas 'nome' e 'status'
-    # para alimentar o seletor de agendamento manual.
     @st.cache_data(show_spinner="Carregando calendário...")
     def load_data_for_calendar_tab(_db_engine):
         """
@@ -389,20 +376,14 @@ def main():
         - id, nome, status: para o seletor de agendamento.
         - data_cobranca: para os contadores do calendário HTML.
         """
-        # Esta função poderia ser otimizada no seu serviço de banco de dados
-        # para já trazer apenas as colunas necessárias.
-        # Ex: SELECT id, nome, status, data_cobranca FROM devedores
         df_full = load_devedores_from_db(_db_engine)
         
         if df_full.empty:
-            # Retorna um DataFrame vazio com a estrutura correta se não houver dados
             return pd.DataFrame(columns=['id', 'nome', 'status', 'data_cobranca'])
         
-        # Garante que as colunas necessárias existam
         required_cols = ['id', 'nome', 'status', 'data_cobranca']
         for col in required_cols:
             if col not in df_full.columns:
-                # Adiciona coluna vazia se não existir para evitar KeyErrors
                 df_full[col] = None 
         
         df_full['data_cobranca'] = pd.to_datetime(df_full['data_cobranca'], errors='coerce')
@@ -411,13 +392,25 @@ def main():
 
     df_para_aba_calendario = load_data_for_calendar_tab(st.session_state.db_engine)
     
+    # Define qual aba está ativa e a exibe
     tab1, tab2 = st.tabs(["Ações de Cobrança", "Calendário e Agendamentos"])
 
-    with tab1:
-        exibir_acoes_cobranca_tab()
-    with tab2:
-        # Passa o DataFrame que agora contém todas as colunas necessárias
-        exibir_calendario_cobrancas_tab(df_para_aba_calendario)
+    # Callback para atualizar o estado da aba quando uma aba é clicada
+    def set_active_tab(tab_name):
+        st.session_state.active_tab = tab_name
+
+    # Usa o estado para controlar qual aba é exibida
+    if st.session_state.active_tab == "Ações de Cobrança":
+        with tab1:
+            exibir_acoes_cobranca_tab()
+        with tab2:
+            exibir_calendario_cobrancas_tab(df_para_aba_calendario)
+    elif st.session_state.active_tab == "Calendário e Agendamentos":
+        with tab2:
+            exibir_calendario_cobrancas_tab(df_para_aba_calendario)
+        with tab1:
+            exibir_acoes_cobranca_tab()
+
 
 if __name__ == "__main__":
     main()

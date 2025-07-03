@@ -1,290 +1,284 @@
-import pandas as pd
-import io
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
+# devedores_service.py
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func, and_, or_
 from datetime import datetime, date, timedelta
-from functools import wraps
-from typing import Tuple, Any, Dict, List
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
-from datetime import date, datetime
-import math
+import calendar
+import pandas as pd
 
-from database import get_session, Devedor, StatusDevedor
+# Presume-se que Devedor e StatusDevedor são importados de database.py
+try:
+    from database import Devedor, StatusDevedor
+except ImportError:
+    # Fallback para execução independente ou testes, se necessário
+    print("Aviso: Não foi possível importar Devedor e StatusDevedor de database.py. Certifique-se de que database.py está acessível.")
+    # Definições mock para permitir que o arquivo seja lido sem erro imediato
+    class StatusDevedor:
+        AGENDADO = "Agendado"
+        PENDENTE = "Pendente"
+        PAGO = "Pago"
+    class Devedor:
+        pass # Apenas para evitar NameError, a funcionalidade real requer a classe completa
 
-def session_handler(func):
-    
-    @wraps(func)
-    def wrapper(db_engine, *args, **kwargs):
-        session = get_session(db_engine)
-        try:
-           
-            result = func(session, *args, **kwargs)
-            session.commit()
-            return result
-        except IntegrityError as e:
-            session.rollback()
-           
-            return False, f"Erro de Integridade: Um registro com dados únicos já existe. Detalhe: {e.orig}"
-        except Exception as e:
-            session.rollback()
-            
-            return False, f"Ocorreu um erro inesperado na operação: {e}"
-        finally:
-            session.close()
-    return wrapper
+# --- Funções Auxiliares ---
+def calculate_next_business_day(start_date: date, num_days: int) -> date:
+    """
+    Calcula uma data futura pulando fins de semana.
+    Args:
+        start_date (date): A data inicial para o cálculo.
+        num_days (int): O número de dias úteis a adicionar.
+    Returns:
+        date: A data resultante após adicionar os dias úteis.
+    """
+    current_date = start_date
+    business_days_added = 0
+    while business_days_added < num_days:
+        current_date += timedelta(days=1)
+        # weekday() retorna 0 para segunda-feira e 6 para domingo
+        if current_date.weekday() < 5:  # Verifica se é um dia de semana (segunda a sexta)
+            business_days_added += 1
+    return current_date
 
-def load_devedores_from_db(db_engine) -> pd.DataFrame:
-   
+# --- Funções de Serviço de Banco de Dados ---
+
+def marcar_cobranca_feita_e_reagendar_in_db(engine, devedor_id: int, nova_data: date = None):
+    """
+    Marca uma cobrança como feita e reagenda a próxima cobrança.
+    Se 'nova_data' não for fornecida, reagenda automaticamente para 10 dias úteis.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        devedor_id (int): O ID do devedor.
+        nova_data (date, optional): A data para reagendar a cobrança.
+                                     Se None, calcula 10 dias úteis.
+    Returns:
+        tuple: (bool, str) - Sucesso da operação e mensagem.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
     try:
-        with db_engine.connect() as connection:
-           
-            query = select(Devedor)
-            df = pd.read_sql(query, connection)
-        
+        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+        if not devedor:
+            return False, "Devedor não encontrado."
 
-        for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento']:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-        
+        devedor.ultima_cobranca = datetime.now()
+        # Garante que a fase da cobrança cicla entre 1, 2 e 3
+        devedor.fase_cobranca = (devedor.fase_cobranca % 3) + 1
 
-        if 'status' in df.columns:
-             df['status'] = df['status'].apply(lambda s: s.value if isinstance(s, StatusDevedor) else s)
-                
-        return df
-    except Exception as e:
-        print(f"Erro ao carregar devedores do banco de dados: {e}")
-        return pd.DataFrame(columns=[
-            'id', 'pessoa', 'nome', 'valortotal', 'atraso', 'telefone',
-            'data_cobranca', 'ultima_cobranca', 'status', 'data_pagamento'
-        ])
-
-@session_handler
-def add_devedor_to_db(session, nome: str, valortotal: float, atraso: int, telefone: str = None, pessoa_id: str = None) -> Tuple[bool, str]:
-
-    if not nome:
-        return False, "Erro: O campo 'Nome' é obrigatório e não pode ser vazio."
-    
-    novo_devedor = Devedor(
-        pessoa=pessoa_id,
-        nome=nome,
-        valortotal=valortotal,
-        atraso=atraso,
-        telefone=telefone,
-        status=StatusDevedor.PENDENTE 
-    )
-    session.add(novo_devedor)
-    
-    return True, f"Devedor '{nome}' adicionado com sucesso!"
-
-@session_handler
-def update_devedor_in_db(session, devedor_id: int, updates: Dict[str, Any]) -> Tuple[bool, str]:
-    
-    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-    if not devedor:
-        return False, "Devedor não encontrado para atualização."
-
-    for key, value in updates.items():
-       
-        if key == 'status' and isinstance(value, str):
-            try:
-                
-                enum_value = StatusDevedor(value)
-                setattr(devedor, key, enum_value)
-            except ValueError:
-                return False, f"Status '{value}' inválido."
+        if nova_data:
+            # Se uma nova data foi fornecida (agendamento manual)
+            devedor.data_cobranca = nova_data
+            msg = f"Cobrança para {devedor.nome} marcada manualmente para {nova_data.strftime('%d/%m/%Y')}."
         else:
-            setattr(devedor, key, value)
-            
-    return True, f"Devedor ID {devedor_id} atualizado com sucesso."
+            # Se não foi fornecida (botão 'Cobrança Feita'), calcula 10 dias úteis
+            proxima_data_cobranca = calculate_next_business_day(date.today(), 10)
+            devedor.data_cobranca = proxima_data_cobranca
+            msg = f"Cobrança para {devedor.nome} marcada como feita e reagendada para {proxima_data_cobranca.strftime('%d/%m/%Y')} (10 dias úteis)."
 
-@session_handler
-def remover_devedor_from_db(session, devedor_id: int) -> Tuple[bool, str]:
-    
-    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-    if devedor:
-        session.delete(devedor)
-        return True, "Devedor removido com sucesso!"
-    else:
-        return False, "Devedor não encontrado para remoção."
-
-def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
-
-    try:
-        df_excel = pd.read_excel(file, engine='openpyxl')
-    except Exception as e:
-        return False, f"Erro ao ler o arquivo Excel: {e}"
-
-    required_cols = ['pessoa', 'nome', 'valortotal', 'atraso']
-    if not all(col in df_excel.columns for col in required_cols):
-        return False, f"O arquivo Excel deve conter as colunas: {', '.join(required_cols)}."
-
-    # Limpeza dos dados
-    df_excel['pessoa'] = df_excel['pessoa'].astype(str).str.strip()
-    df_excel.dropna(subset=['pessoa'], inplace=True) 
-    df_excel = df_excel[df_excel['pessoa'] != '']
-    if df_excel.empty:
-        return False, "Nenhum devedor com ID Pessoa válido encontrado no arquivo."
-
-    session = get_session(db_engine)
-    try:
-
-        existing_pessoas_query = session.query(Devedor.nome).all()
-        existing_pessoas = {p[0] for p in existing_pessoas_query}
-
-        
-        df_excel['is_duplicate'] = df_excel['pessoa'].isin(existing_pessoas)
-        df_to_add = df_excel[~df_excel['is_duplicate']].copy()
-        df_excel['pessoa'] = df_excel['pessoa'].astype(str).str.strip().str.upper()
-        existing_pessoas = {str(p[0]).strip().upper() for p in existing_pessoas_query}
-        count_skipped = len(df_excel) - len(df_to_add)
-
-        if df_to_add.empty:
-            return True, f"Importação concluída. Nenhum devedor novo para adicionar. {count_skipped} devedores já existentes foram pulados."
-
-        
-        df_to_add['status'] = StatusDevedor.EM_ABERTO
-        df_to_add['telefone'] = df_to_add.apply(
-            lambda row: str(row['celular1']) if 'celular1' in row and pd.notna(row['celular1']) else str(row.get('telefone')),
-            axis=1
-        )
-        
-        model_cols = [c.key for c in Devedor.__table__.columns if c.key not in ['id']]
-        records_to_insert = df_to_add[model_cols].to_dict('records')
-        
-        session.bulk_insert_mappings(Devedor, records_to_insert)
+        devedor.status = StatusDevedor.AGENDADO.value # O status sempre será "Agendado" após uma cobrança feita/reagendada
         session.commit()
-        
-        return True, f"Importação concluída com sucesso! Adicionados: {len(records_to_insert)}. Pulados (já existentes): {count_skipped}."
-    
+        return True, msg
     except Exception as e:
         session.rollback()
-        return False, f"Erro durante a importação para o banco de dados: {e}"
+        return False, f"Erro ao marcar cobrança e reagendar: {e}"
     finally:
         session.close()
 
-def export_devedores_to_excel(df_to_export: pd.DataFrame) -> Tuple[io.BytesIO | None, str]:
-    if df_to_export.empty:
-        return None, "Nenhum dado para exportar."
-
-    output = io.BytesIO()
-    df_copy = df_to_export.copy()
-
-    for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento']:
-        if col in df_copy.columns and pd.api.types.is_datetime64_any_dtype(df_copy[col]):
-            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S').replace('NaT', '')
-
+def marcar_como_pago_in_db(engine, devedor_id: int):
+    """
+    Marca um devedor como pago.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        devedor_id (int): O ID do devedor.
+    Returns:
+        tuple: (bool, str) - Sucesso da operação e mensagem.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
     try:
-        with pd.ExcelWriter(output, engine='xlsxwriter', datetime_format='yyyy-mm-dd') as writer:
-            df_copy.to_excel(writer, index=False, sheet_name='Devedores')
-        output.seek(0)
-        return output.getvalue(), "Dados exportados com sucesso!"
+        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+        if not devedor:
+            return False, "Devedor não encontrado."
+        
+        devedor.status = StatusDevedor.PAGO.value
+        devedor.data_pagamento = date.today()
+        devedor.data_cobranca = None # Remove a próxima data de cobrança
+        session.commit()
+        return True, f"Devedor {devedor.nome} marcado como PAGO."
     except Exception as e:
-        return None, f"Erro ao gerar o arquivo Excel: {e}"
+        session.rollback()
+        return False, f"Erro ao marcar como pago: {e}"
+    finally:
+        session.close()
 
-@session_handler
-def marcar_como_pago_in_db(session, devedor_id: int) -> Tuple[bool, str]:
-    
-    return update_devedor_in_db(
-        session, 
-        devedor_id, 
-        {'status': StatusDevedor.PAGO, 'data_pagamento': date.today()}
-    )
-
-@session_handler
-def marcar_cobranca_feita_e_reagendar_in_db(session, devedor_id: int, data_programada: date = None) -> Tuple[bool, str]:
-    
-    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-    if not devedor:
-        return False, "Devedor não encontrado"
-    
-    devedor.ultima_cobranca = date.today()
-    devedor.data_cobranca = data_programada if data_programada else date.today() + timedelta(days=10)
-    devedor.status = StatusDevedor.AGENDADO
-
-    
-    if hasattr(devedor, 'fase_cobranca') and devedor.fase_cobranca < 3:
-        devedor.fase_cobranca += 1
-    
-    return True, "Cobrança registrada e próxima agendada com sucesso."
-
-def get_devedores_para_acoes_count(db_engine, filtro_nome: str = None) -> int:
-    """Conta quantos devedores precisam de ação, aplicando filtros."""
-    with Session(db_engine) as session:
-        hoje = date.today()
-        query = session.query(func.count(Devedor.id))
-        
-        # Lógica de filtro replicada do seu app Streamlit
-        nao_pago = Devedor.status != StatusDevedor.PAGO.value
-        agendado_para_hoje = (Devedor.status == StatusDevedor.AGENDADO.value) & (func.date(Devedor.data_cobranca) == hoje)
-        requer_acao = Devedor.status != StatusDevedor.AGENDADO.value
-        
-        query = query.filter(nao_pago & or_(agendado_para_hoje, requer_acao))
-
-        if filtro_nome:
-            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
-            
-        return query.scalar()
-
-def get_devedores_para_acoes_paginated(db_engine, page: int, page_size: int, sort_column: str, sort_ascending: bool, filtro_nome: str = None) -> pd.DataFrame:
-    """Busca uma página de devedores que precisam de ação."""
-    with Session(db_engine) as session:
-        offset = page * page_size
-        hoje = date.today()
-        
-        query = session.query(Devedor)
-
-        # Mesma lógica de filtro
-        nao_pago = Devedor.status != StatusDevedor.PAGO.value
-        agendado_para_hoje = (Devedor.status == StatusDevedor.AGENDADO.value) & (func.date(Devedor.data_cobranca) == hoje)
-        requer_acao = Devedor.status != StatusDevedor.AGENDADO.value
-        
-        query = query.filter(nao_pago & or_(agendado_para_hoje, requer_acao))
-
-        if filtro_nome:
-            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
-
-        # Ordenação
-        coluna_ordenacao = getattr(Devedor, sort_column, Devedor.nome)
-        if not sort_ascending:
-            coluna_ordenacao = coluna_ordenacao.desc()
-        query = query.order_by(coluna_ordenacao)
-
-        # Paginação
-        query = query.limit(page_size).offset(offset)
-        
-        # Ler para o pandas
-        df = pd.read_sql(query.statement, session.bind)
-        return df
-
-def get_devedores_para_dia_count(db_engine, selected_date: date) -> int:
+def remover_devedor_from_db(engine, devedor_id: int):
     """
-    Conta o número total de cobranças agendadas para uma data específica.
+    Remove um devedor do banco de dados.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        devedor_id (int): O ID do devedor.
+    Returns:
+        tuple: (bool, str) - Sucesso da operação e mensagem.
     """
-    with Session(db_engine) as session:
-        # Usamos func.date() para comparar apenas a parte da data, ignorando a hora.
-        query = session.query(func.count(Devedor.id)).filter(
-            func.date(Devedor.data_cobranca) == selected_date
-        )
-        total = query.scalar()
-        return total if total is not None else 0
-
-def get_devedores_para_dia_paginated(db_engine, selected_date: date, page: int, page_size: int) -> pd.DataFrame:
-    """
-    Busca uma página de devedores com cobrança agendada para uma data específica.
-    """
-    with Session(db_engine) as session:
-        offset = page * page_size
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        devedor = session.query(Devedor).filter_by(id=devedor_id).first()
+        if not devedor:
+            return False, "Devedor não encontrado."
         
+        session.delete(devedor)
+        session.commit()
+        return True, f"Devedor {devedor.nome} removido com sucesso."
+    except Exception as e:
+        session.rollback()
+        return False, f"Erro ao remover devedor: {e}"
+    finally:
+        session.close()
+
+def get_devedores_para_acoes_count(engine, filtro_nome: str = None):
+    """
+    Retorna a contagem de devedores que requerem ação imediata.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        filtro_nome (str, optional): Filtra por nome do devedor.
+    Returns:
+        int: Número total de devedores que requerem ação.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        # Devedores que requerem ação:
+        # - Status PENDENTE
+        # - Status AGENDADO e data_cobranca é hoje ou no passado
         query = session.query(Devedor).filter(
-            func.date(Devedor.data_cobranca) == selected_date
-        ).order_by(
-            Devedor.nome  # Ordenar por nome para consistência entre as páginas
-        ).limit(
-            page_size
-        ).offset(
-            offset
+            or_(
+                Devedor.status == StatusDevedor.PENDENTE.value,
+                and_(
+                    Devedor.status == StatusDevedor.AGENDADO.value,
+                    Devedor.data_cobranca <= date.today()
+                )
+            )
         )
+        if filtro_nome:
+            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
+        return query.count()
+    finally:
+        session.close()
+
+def get_devedores_para_acoes_paginated(engine, page: int, page_size: int, sort_column: str, sort_ascending: bool, filtro_nome: str = None):
+    """
+    Retorna devedores que requerem ação imediata, com paginação e ordenação.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        page (int): O número da página (base 0).
+        page_size (int): O número de itens por página.
+        sort_column (str): A coluna para ordenar.
+        sort_ascending (bool): True para ascendente, False para descendente.
+        filtro_nome (str, optional): Filtra por nome do devedor.
+    Returns:
+        pd.DataFrame: DataFrame dos devedores.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        query = session.query(Devedor).filter(
+            or_(
+                Devedor.status == StatusDevedor.PENDENTE.value,
+                and_(
+                    Devedor.status == StatusDevedor.AGENDADO.value,
+                    Devedor.data_cobranca <= date.today()
+                )
+            )
+        )
+        if filtro_nome:
+            query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
+
+        # Aplica ordenação
+        if sort_ascending:
+            query = query.order_by(getattr(Devedor, sort_column))
+        else:
+            query = query.order_by(getattr(Devedor, sort_column).desc())
+
+        # Aplica paginação
+        query = query.offset(page * page_size).limit(page_size)
         
-        df = pd.read_sql(query.statement, session.bind)
+        devedores = query.all()
+        df = pd.DataFrame([d.__dict__ for d in devedores])
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
         return df
+    finally:
+        session.close()
+
+def load_devedores_from_db(engine):
+    """
+    Carrega todos os devedores do banco de dados.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+    Returns:
+        pd.DataFrame: DataFrame de todos os devedores.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        devedores = session.query(Devedor).all()
+        df = pd.DataFrame([d.__dict__ for d in devedores])
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+        return df
+    finally:
+        session.close()
+
+def get_devedores_para_dia_count(engine, selected_date: date):
+    """
+    Retorna a contagem de devedores agendados para uma data específica.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        selected_date (date): A data para verificar os agendamentos.
+    Returns:
+        int: Número total de devedores agendados para a data.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        return session.query(Devedor).filter(
+            and_(
+                Devedor.status == StatusDevedor.AGENDADO.value,
+                func.date(Devedor.data_cobranca) == selected_date
+            )
+        ).count()
+    finally:
+        session.close()
+
+def get_devedores_para_dia_paginated(engine, selected_date: date, page: int, page_size: int):
+    """
+    Retorna devedores agendados para uma data específica, com paginação.
+    Args:
+        engine: O objeto engine do SQLAlchemy.
+        selected_date (date): A data para verificar os agendamentos.
+        page (int): O número da página (base 0).
+        page_size (int): O número de itens por página.
+    Returns:
+        pd.DataFrame: DataFrame dos devedores agendados para a data.
+    """
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        query = session.query(Devedor).filter(
+            and_(
+                Devedor.status == StatusDevedor.AGENDADO.value,
+                func.date(Devedor.data_cobranca) == selected_date
+            )
+        )
+        # Ordena para garantir consistência na paginação
+        query = query.order_by(Devedor.data_cobranca, Devedor.nome)
+        
+        # Aplica paginação
+        query = query.offset(page * page_size).limit(page_size)
+        
+        devedores = query.all()
+        df = pd.DataFrame([d.__dict__ for d in devedores])
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+        return df
+    finally:
+        session.close()
