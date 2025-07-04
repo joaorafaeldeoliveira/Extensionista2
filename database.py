@@ -9,6 +9,7 @@ class StatusDevedor(enum.Enum):
     PENDENTE = "PENDENTE"  
     AGENDADO = "AGENDADO" 
     PAGO = "PAGO"
+    EM_ABERTO = "EM_ABERTO"
 
 Base = declarative_base()
 

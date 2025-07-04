@@ -7,10 +7,20 @@ from functools import wraps
 from typing import Tuple, Any, Dict, List
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
+from sqlalchemy.engine import Engine
 from datetime import date, datetime
+from sqlalchemy.orm.exc import NoResultFound
 import math
 
 from database import get_session, Devedor, StatusDevedor
+
+def _get_engine(db_object) -> Engine:
+    """Função auxiliar para garantir que sempre tenhamos um Engine."""
+    if isinstance(db_object, Engine):
+        return db_object
+    if isinstance(db_object, Session):
+        return db_object.get_bind()
+    raise TypeError(f"Objeto de banco de dados inesperado: {type(db_object)}")
 
 def session_handler(func):
     
@@ -18,17 +28,14 @@ def session_handler(func):
     def wrapper(db_engine, *args, **kwargs):
         session = get_session(db_engine)
         try:
-           
             result = func(session, *args, **kwargs)
             session.commit()
             return result
         except IntegrityError as e:
             session.rollback()
-           
             return False, f"Erro de Integridade: Um registro com dados únicos já existe. Detalhe: {e.orig}"
         except Exception as e:
             session.rollback()
-            
             return False, f"Ocorreu um erro inesperado na operação: {e}"
         finally:
             session.close()
@@ -43,7 +50,7 @@ def load_devedores_from_db(db_engine) -> pd.DataFrame:
             df = pd.read_sql(query, connection)
         
 
-        for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento']:
+        for col in ['data_cobranca', 'ultima_cobranca', 'data_pagamento','datavencimento']:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
         
@@ -71,7 +78,7 @@ def add_devedor_to_db(session, nome: str, valortotal: float, atraso: int, telefo
         valortotal=valortotal,
         atraso=atraso,
         telefone=telefone,
-        status=StatusDevedor.PENDENTE 
+        status=StatusDevedor.EM_ABERTO
     )
     session.add(novo_devedor)
     
@@ -99,17 +106,27 @@ def update_devedor_in_db(session, devedor_id: int, updates: Dict[str, Any]) -> T
     return True, f"Devedor ID {devedor_id} atualizado com sucesso."
 
 @session_handler
-def remover_devedor_from_db(session, devedor_id: int) -> Tuple[bool, str]:
-    
-    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-    if devedor:
-        session.delete(devedor)
-        return True, "Devedor removido com sucesso!"
-    else:
-        return False, "Devedor não encontrado para remoção."
+def remover_devedor_from_db(db_object, devedor_id: int):
+    """
+    Remove um devedor do banco de dados.
+    AGORA COM LÓGICA DEFENSIVA PARA OBTER O ENGINE CORRETO.
+    """
+    try:
+        engine = _get_engine(db_object)
+        with Session(bind=engine) as session:
+            devedor = session.query(Devedor).filter(Devedor.id == devedor_id).one()
+            
+            session.delete(devedor)
+            
+            session.commit()
+            return True, "Devedor removido com sucesso!"
+            
+    except NoResultFound:
+        return False, "Erro: Devedor não encontrado."
+    except Exception as e:
+        return False, f"Erro ao remover devedor: {e}"
 
 def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
-
     try:
         df_excel = pd.read_excel(file, engine='openpyxl')
     except Exception as e:
@@ -128,34 +145,47 @@ def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
 
     session = get_session(db_engine)
     try:
+        # Lógica de duplicados
+        existing_pessoa_ids_query = session.query(Devedor.pessoa).all()
+        existing_pessoa_ids = {str(p[0]).strip().upper() for p in existing_pessoa_ids_query if p[0]}
 
-        existing_pessoas_query = session.query(Devedor.nome).all()
-        existing_pessoas = {p[0] for p in existing_pessoas_query}
-
-        
-        df_excel['is_duplicate'] = df_excel['pessoa'].isin(existing_pessoas)
-        df_to_add = df_excel[~df_excel['is_duplicate']].copy()
-        df_excel['pessoa'] = df_excel['pessoa'].astype(str).str.strip().str.upper()
-        existing_pessoas = {str(p[0]).strip().upper() for p in existing_pessoas_query}
+        df_excel['pessoa_cleaned'] = df_excel['pessoa'].str.strip().str.upper()
+        df_to_add = df_excel[~df_excel['pessoa_cleaned'].isin(existing_pessoa_ids)].copy()
         count_skipped = len(df_excel) - len(df_to_add)
 
         if df_to_add.empty:
-            return True, f"Importação concluída. Nenhum devedor novo para adicionar. {count_skipped} devedores já existentes foram pulados."
+            return True, f"Importação concluída. Nenhum devedor novo para adicionar. {count_skipped} devedores já existentes foram ignorados."
 
+        # Converter status
+        df_to_add['status'] = df_to_add['status'].replace('Pendente', StatusDevedor.EM_ABERTO.value)
+
+        # Tratar telefones
+        if 'celular1' in df_to_add.columns:
+            df_to_add['telefone'] = df_to_add['celular1'].fillna(df_to_add.get('telefone', '')).astype(str)
+        elif 'telefone' not in df_to_add.columns:
+            df_to_add['telefone'] = ''
         
-        df_to_add['status'] = StatusDevedor.EM_ABERTO
-        df_to_add['telefone'] = df_to_add.apply(
-            lambda row: str(row['celular1']) if 'celular1' in row and pd.notna(row['celular1']) else str(row.get('telefone')),
-            axis=1
+        # Limpar telefones inválidos
+        df_to_add['telefone'] = df_to_add['telefone'].apply(
+            lambda x: None if pd.isna(x) or x in ['()', '( )', '()--', '( )--', '-'] else str(x)
         )
-        
-        model_cols = [c.key for c in Devedor.__table__.columns if c.key not in ['id']]
-        records_to_insert = df_to_add[model_cols].to_dict('records')
+
+        # Tratar campos datetime
+        datetime_cols = ['data_cobranca', 'ultima_cobranca', 'data_pagamento']
+        for col in datetime_cols:
+            if col in df_to_add.columns:
+                df_to_add[col] = df_to_add[col].where(pd.notna(df_to_add[col]), None)
+
+        # Garantir que apenas colunas existentes no modelo Devedor sejam usadas
+        model_cols = [c.key for c in Devedor.__table__.columns]
+        df_final = df_to_add[[col for col in df_to_add.columns if col in model_cols]]
+
+        records_to_insert = df_final.to_dict('records')
         
         session.bulk_insert_mappings(Devedor, records_to_insert)
         session.commit()
         
-        return True, f"Importação concluída com sucesso! Adicionados: {len(records_to_insert)}. Pulados (já existentes): {count_skipped}."
+        return True, f"Importação concluída! Adicionados: {len(records_to_insert)}. Ignorados (já existentes): {count_skipped}."
     
     except Exception as e:
         session.rollback()
@@ -183,30 +213,60 @@ def export_devedores_to_excel(df_to_export: pd.DataFrame) -> Tuple[io.BytesIO | 
         return None, f"Erro ao gerar o arquivo Excel: {e}"
 
 @session_handler
-def marcar_como_pago_in_db(session, devedor_id: int) -> Tuple[bool, str]:
-    
-    return update_devedor_in_db(
-        session, 
-        devedor_id, 
-        {'status': StatusDevedor.PAGO, 'data_pagamento': date.today()}
-    )
+def marcar_como_pago_in_db(db_object, devedor_id: int):
+    """
+    Marca um devedor como PAGO.
+    AGORA COM LÓGICA DEFENSIVA PARA OBTER O ENGINE CORRETO.
+    """
+    try:
+        engine = _get_engine(db_object)
+        with Session(bind=engine) as session:
+            devedor = session.query(Devedor).filter(Devedor.id == devedor_id).one()
+            devedor.status = StatusDevedor.PAGO.value
+            devedor.data_pagamento = date.today()
+            
+            session.commit()
+            return True, "Devedor marcado como pago com sucesso!"
+            
+    except NoResultFound:
+        return False, "Erro: Devedor não encontrado."
+    except Exception as e:
+        return False, f"Erro ao marcar como pago: {e}"
 
 @session_handler
-def marcar_cobranca_feita_e_reagendar_in_db(session, devedor_id: int, data_programada: date = None) -> Tuple[bool, str]:
-    
-    devedor = session.query(Devedor).filter_by(id=devedor_id).first()
-    if not devedor:
-        return False, "Devedor não encontrado"
-    
-    devedor.ultima_cobranca = date.today()
-    devedor.data_cobranca = data_programada if data_programada else date.today() + timedelta(days=10)
-    devedor.status = StatusDevedor.AGENDADO
+def marcar_cobranca_feita_e_reagendar_in_db(db_object, devedor_id: int, nova_data: date = None):
+    """
+    Marca uma cobrança como feita e reagenda a próxima.
+    AGORA COM LÓGICA DEFENSIVA PARA OBTER O ENGINE CORRETO.
+    """
+    try:
+        engine = _get_engine(db_object)
+        with Session(bind=engine) as session:
+            devedor = session.query(Devedor).filter(Devedor.id == devedor_id).one()
+            
+            hoje = date.today()
+            devedor.ultima_cobranca = hoje
 
-    
-    if hasattr(devedor, 'fase_cobranca') and devedor.fase_cobranca < 3:
-        devedor.fase_cobranca += 1
-    
-    return True, "Cobrança registrada e próxima agendada com sucesso."
+            if nova_data is None:
+                proxima_data = hoje + timedelta(days=10)
+            else:
+                proxima_data = nova_data
+
+            devedor.data_cobranca = proxima_data
+            devedor.status = StatusDevedor.AGENDADO.value
+            if devedor.fase_cobranca is None:
+                devedor.fase_cobranca = 1
+            else:
+                devedor.fase_cobranca += 1
+            
+            session.commit()
+            return True, f"Cobrança registrada! Próximo agendamento para {proxima_data.strftime('%d/%m/%Y')}."
+
+    except NoResultFound:
+        return False, "Erro: Devedor não encontrado."
+    except Exception as e:
+        # A sessão faz rollback automaticamente ao sair do 'with' em caso de erro
+        return False, f"Erro ao registrar cobrança: {e}"
 
 def get_devedores_para_acoes_count(db_engine, filtro_nome: str = None) -> int:
     """Conta quantos devedores precisam de ação, aplicando filtros."""
