@@ -156,16 +156,16 @@ def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
         if df_to_add.empty:
             return True, f"Importação concluída. Nenhum devedor novo para adicionar. {count_skipped} devedores já existentes foram ignorados."
 
-        # Converter status
+        
         df_to_add['status'] = df_to_add['status'].replace('Pendente', StatusDevedor.EM_ABERTO.value)
 
-        # Tratar telefones
+       
         if 'celular1' in df_to_add.columns:
             df_to_add['telefone'] = df_to_add['celular1'].fillna(df_to_add.get('telefone', '')).astype(str)
         elif 'telefone' not in df_to_add.columns:
             df_to_add['telefone'] = ''
         
-        # Limpar telefones inválidos
+        
         df_to_add['telefone'] = df_to_add['telefone'].apply(
             lambda x: None if pd.isna(x) or x in ['()', '( )', '()--', '( )--', '-'] else str(x)
         )
