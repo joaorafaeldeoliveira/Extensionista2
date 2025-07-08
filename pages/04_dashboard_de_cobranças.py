@@ -5,12 +5,9 @@ from datetime import datetime, timedelta, date
 from database import Devedor, get_session, init_db
 from sqlalchemy.orm import Session
 
-# --- Inicializar banco ---
 engine = init_db()
 session: Session = get_session(engine)
 
-
-# --- Carregar dados dos devedores ---
 def carregar_dados_devedores():
     devedores = session.query(Devedor).all()
     df = pd.DataFrame([{
@@ -33,7 +30,6 @@ def carregar_dados_devedores():
     return df
 
 
-# --- Função principal da aba ---
 def exibir_dashboard_estatisticas_tab():
     st.header("📊 Dashboard de Estatísticas de Cobranças")
 
@@ -43,7 +39,6 @@ def exibir_dashboard_estatisticas_tab():
             "Nenhum devedor encontrado no sistema para gerar estatísticas.")
         return
 
-    # --- Filtros ---
     st.subheader("🔍 Filtros")
     col1, col2, col3 = st.columns(3)
 
@@ -64,7 +59,6 @@ def exibir_dashboard_estatisticas_tab():
         fase_options = ["Todas"] + fases
         selected_fase = st.selectbox("Fase de Cobrança", options=fase_options)
 
-    # --- Aplicar Filtros ---
     df_filtrado = df.copy()
 
     if selected_status != "Todos":
@@ -84,7 +78,6 @@ def exibir_dashboard_estatisticas_tab():
         df_filtrado = df_filtrado[df_filtrado['fase_cobranca'] ==
                                   selected_fase]
 
-    # --- Métricas ---
     st.subheader("📈 Métricas Principais")
     total_devedores = len(df_filtrado)
     total_valor = df_filtrado['valortotal'].sum()
@@ -156,7 +149,6 @@ def exibir_dashboard_estatisticas_tab():
                               title="Distribuição por Fase de Cobrança")
             st.plotly_chart(fig_fase, use_container_width=True)
 
-    # --- Tabela Detalhada ---
     st.subheader("📋 Tabela de Devedores")
     cols = [
         'id', 'nome', 'status', 'fase_cobranca', 'valortotal', 'atraso',
@@ -183,9 +175,7 @@ def exibir_dashboard_estatisticas_tab():
                      "data_cobranca": "Próx. Cobrança",
                      "ultima_cobranca": "Últ. Cobrança"
                  })
-
-
-# --- Execução principal ---
+    
 if __name__ == "__main__":
     st.set_page_config(page_title="Dashboard de Cobranças", layout="wide")
     st.title("📈 Sistema de Gestão de Cobranças")
