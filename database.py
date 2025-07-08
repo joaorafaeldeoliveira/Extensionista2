@@ -1,10 +1,8 @@
-# database.py
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Enum
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 import enum
 
-# Definição do Enum para StatusDevedor
 class StatusDevedor(enum.Enum):
     PENDENTE = "PENDENTE"  
     AGENDADO = "AGENDADO" 
