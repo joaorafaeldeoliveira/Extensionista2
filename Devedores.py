@@ -5,7 +5,6 @@ import numpy as np
 import io
 from datetime import datetime, date
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Sistema de Devedores",
                    page_icon="📋",
                    layout="wide",
@@ -16,11 +15,9 @@ from devedores_service import (load_devedores_from_db, add_devedor_to_db,
                                remover_devedor_from_db, import_excel_to_db,
                                export_devedores_to_excel, update_devedor_in_db)
 
-
 @st.cache_data(show_spinner=False)
 def cached_load_devedores(_engine):
     return load_devedores_from_db(_engine)
-
 
 def initialize_session_state():
     defaults = {
@@ -43,9 +40,7 @@ def initialize_session_state():
     if 'db_engine' not in st.session_state:
         st.session_state.db_engine = init_db()
 
-
 initialize_session_state()
-
 
 def validate_excel_columns(df: pd.DataFrame, required_cols: list) -> tuple:
     missing = [col for col in required_cols if col not in df.columns]
@@ -116,9 +111,9 @@ def sidebar_content():
             filters['original_valor_max'] = float(valortotal_col.max())
         if filters['original_valor_min'] == filters['original_valor_max']:
             filters[
-                'original_valor_max'] += 1.0  # Add 1 to max if they are equal
+                'original_valor_max'] += 1.0  
 
-        # Handle atraso (days) range
+   
         if atraso_col.empty:
             filters['original_dias_min'] = 0
             filters['original_dias_max'] = 100
@@ -126,10 +121,8 @@ def sidebar_content():
             filters['original_dias_min'] = int(atraso_col.min())
             filters['original_dias_max'] = int(atraso_col.max())
         if filters['original_dias_min'] == filters['original_dias_max']:
-            filters['original_dias_max'] += 1  # Add 1 to max if they are equal
-
-        # --- MODIFICATION END ---
-
+            filters['original_dias_max'] += 1 
+    
     with st.expander("Filtros por Valor e Atraso"):
         valor_min, valor_max = st.slider(
             "Valor",
@@ -198,7 +191,6 @@ def render_data_controls():
             excel_data, msg = export_devedores_to_excel(
                 st.session_state.filtered_df)
 
-            # --- ADD THIS CHECK ---
             if excel_data:
                 st.download_button(
                     label="📤 Exportar Tabela Filtrada para Excel",
@@ -210,8 +202,6 @@ def render_data_controls():
                     key="export_filtered_excel_btn",
                     use_container_width=True)
 
-
-# ### NOVO ### - Função para processar as edições feitas na tabela
 def process_table_edits(edited_df, original_df):
     diff_mask = (edited_df
                  != original_df) & ~(edited_df.isna() & original_df.isna())
@@ -296,8 +286,7 @@ def show_lista_devedores_tab(filters):
             "ℹ️ Nenhum devedor encontrado no banco de dados. Adicione um novo ou importe de um Excel."
         )
         return
-
-    # Aplica os filtros ao DataFrame.
+      
     st.session_state.filtered_df = apply_filters(st.session_state.df, filters)
     st.markdown("---")
 
@@ -456,9 +445,7 @@ def show_lista_devedores_tab(filters):
                     display_df):
                 st.session_state.page_df_before_edit = display_df.copy()
             process_table_edits(edited_df,
-                                st.session_state.page_df_before_edit)
-
-        # Botão para INICIAR o processo de exclusão
+                                st.session_state.page_df_before_edit)                
         linhas_para_excluir = edited_df[edited_df['Excluir'] == True]
         if not linhas_para_excluir.empty:
             if action_col2.button(
