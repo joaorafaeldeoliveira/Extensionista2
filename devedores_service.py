@@ -161,7 +161,6 @@ def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
 
     session = get_session(db_engine)
     try:
-        # Lógica de duplicados
         existing_pessoa_ids_query = session.query(Devedor.pessoa).all()
         existing_pessoa_ids = {
             str(p[0]).strip().upper()
@@ -189,14 +188,12 @@ def import_excel_to_db(db_engine, file: io.BytesIO) -> Tuple[bool, str]:
             lambda x: None if pd.isna(
                 x) or x in ['()', '( )', '()--', '( )--', '-'] else str(x))
 
-        # Tratar campos datetime
+
         datetime_cols = ['data_cobranca', 'ultima_cobranca', 'data_pagamento']
         for col in datetime_cols:
             if col in df_to_add.columns:
                 df_to_add[col] = df_to_add[col].where(pd.notna(df_to_add[col]),
                                                       None)
-
-        # Garantir que apenas colunas existentes no modelo Devedor sejam usadas
         model_cols = [c.key for c in Devedor.__table__.columns]
         df_final = df_to_add[[
             col for col in df_to_add.columns if col in model_cols
@@ -299,7 +296,7 @@ def marcar_cobranca_feita_e_reagendar_in_db(db_object,
     except NoResultFound:
         return False, "Erro: Devedor não encontrado."
     except Exception as e:
-        # A sessão faz rollback automaticamente ao sair do 'with' em caso de erro
+    
         return False, f"Erro ao registrar cobrança: {e}"
 
 
@@ -309,7 +306,6 @@ def get_devedores_para_acoes_count(db_engine, filtro_nome: str = None) -> int:
         hoje = date.today()
         query = session.query(func.count(Devedor.id))
 
-        # Lógica de filtro replicada do seu app Streamlit
         nao_pago = Devedor.status != StatusDevedor.PAGO.value
         agendado_para_hoje = (Devedor.status
                               == StatusDevedor.AGENDADO.value) & (func.date(
@@ -338,7 +334,6 @@ def get_devedores_para_acoes_paginated(
 
         query = session.query(Devedor)
 
-        # Mesma lógica de filtro
         nao_pago = Devedor.status != StatusDevedor.PAGO.value
         agendado_para_hoje = (Devedor.status
                               == StatusDevedor.AGENDADO.value) & (func.date(
@@ -350,16 +345,14 @@ def get_devedores_para_acoes_paginated(
         if filtro_nome:
             query = query.filter(Devedor.nome.ilike(f"%{filtro_nome}%"))
 
-        # Ordenação
         coluna_ordenacao = getattr(Devedor, sort_column, Devedor.nome)
         if not sort_ascending:
             coluna_ordenacao = coluna_ordenacao.desc()
         query = query.order_by(coluna_ordenacao)
 
-        # Paginação
         query = query.limit(page_size).offset(offset)
 
-        # Ler para o pandas
+
         df = pd.read_sql(query.statement, session.bind)
         return df
 
@@ -369,7 +362,6 @@ def get_devedores_para_dia_count(db_engine, selected_date: date) -> int:
     Conta o número total de cobranças agendadas para uma data específica.
     """
     with Session(db_engine) as session:
-        # Usamos func.date() para comparar apenas a parte da data, ignorando a hora.
         query = session.query(func.count(Devedor.id)).filter(
             func.date(Devedor.data_cobranca) == selected_date)
         total = query.scalar()
@@ -387,7 +379,7 @@ def get_devedores_para_dia_paginated(db_engine, selected_date: date, page: int,
         query = session.query(Devedor).filter(
             func.date(Devedor.data_cobranca) == selected_date
         ).order_by(
-            Devedor.nome  # Ordenar por nome para consistência entre as páginas
+            Devedor.nome 
         ).limit(page_size).offset(offset)
 
         df = pd.read_sql(query.statement, session.bind)
