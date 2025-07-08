@@ -22,7 +22,6 @@ except ImportError as e:
     )
     st.stop()
 
-# --- INICIALIZAÇÃO DO ESTADO DA SESSÃO ---
 if 'db_engine' not in st.session_state:
     st.session_state.db_engine = init_db()
 if 'selected_date' not in st.session_state:
@@ -32,7 +31,6 @@ if 'page_num_acoes' not in st.session_state:
 if 'page_num_cal' not in st.session_state:
     st.session_state.page_num_cal = 0
 
-# --- FUNÇÕES AUXILIARES ---
 
 
 def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -59,7 +57,6 @@ def exibir_devedor_card(row, from_calendar=False):
     """Exibe o card do devedor com as ações."""
     devedor_id = int(row['id'])
     fase_atual = int(row.get('fase_cobranca', 1))
-    # A chave única agora depende apenas do ID e da origem (aba), garantindo consistência.
     key_suffix = f"{devedor_id}_{'cal' if from_calendar else 'acoes'}"
 
     with st.container(border=True):
@@ -115,7 +112,6 @@ def exibir_devedor_card(row, from_calendar=False):
             if st.button("➡️ Cobrança Feita",
                          key=f"cobranca_feita_{key_suffix}",
                          use_container_width=True):
-                # A lógica de cálculo de data agora está 100% na função de serviço.
                 success, msg = marcar_cobranca_feita_e_reagendar_in_db(
                     st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
@@ -131,14 +127,7 @@ def exibir_devedor_card(row, from_calendar=False):
                     st.session_state.db_engine, devedor_id)
                 st.toast(msg, icon="✅" if success else "❌")
                 if success:
-                    # Limpa apenas os caches relevantes
-                    if 'cached_get_paginated_data' in st.session_state:
-                        del st.session_state['cached_get_paginated_data']
-                    if 'cached_get_devedores_dia' in st.session_state:
-                        del st.session_state['cached_get_devedores_dia']
-                    # Força recarregamento
-                    st.experimental_rerun()
-
+                    clear_all_caches_and_rerun()
             if st.button("❌ Remover Devedor",
                          key=f"remover_{key_suffix}",
                          use_container_width=True,
@@ -148,7 +137,7 @@ def exibir_devedor_card(row, from_calendar=False):
                 st.toast(msg, icon="✅" if success else "❌")
                 if success: clear_all_caches_and_rerun()
 
-            # --- ÁREA de agendamento manual ---
+       
             with st.expander("📅 Agendar Manualmente"):
                 min_data = date.today()
                 max_data = date.today() + timedelta(days=3650)
@@ -156,7 +145,7 @@ def exibir_devedor_card(row, from_calendar=False):
                 default_date = data_atual.date() if pd.notna(
                     data_atual) else min_data
 
-                # Garante que a data padrão esteja dentro do intervalo permitido
+                
                 if default_date < min_data: default_date = min_data
                 if default_date > max_data: default_date = max_data
 
