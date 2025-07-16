@@ -99,9 +99,6 @@ def sidebar_content():
         valortotal_col = st.session_state.df['valortotal'].dropna()
         atraso_col = st.session_state.df['atraso'].dropna()
 
-        # --- MODIFICATION START ---
-
-        # Handle valor (value) range
         if valortotal_col.empty:
             filters['original_valor_min'] = 0.0
             filters['original_valor_max'] = 100.0
