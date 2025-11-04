@@ -34,7 +34,6 @@ if 'page_num_cal' not in st.session_state:
 
 
 def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Função auxiliar para processar o DataFrame recebido do banco."""
     if df.empty:
         return df
 
@@ -54,7 +53,6 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def exibir_devedor_card(row, from_calendar=False):
-    """Exibe o card do devedor com as ações."""
     devedor_id = int(row['id'])
     fase_atual = int(row.get('fase_cobranca', 1))
     key_suffix = f"{devedor_id}_{'cal' if from_calendar else 'acoes'}"
@@ -167,7 +165,6 @@ def exibir_devedor_card(row, from_calendar=False):
 
 
 def exibir_acoes_cobranca_tab():
-    """Exibe a aba 'Ações de Cobrança' com paginação."""
     st.header("🎯 Ações de Cobrança para Hoje")
 
     PAGE_SIZE = 50
